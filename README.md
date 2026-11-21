@@ -19,8 +19,8 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/jakrjone123/DeltaSuit
 - **Combat**
   - **Aimbot** (`Camera` / `Mouse` con suavizado y acumulador sub-píxel), **FOV Circle** (estático o dinámico con zoom), predicción balística basada en `MuzzleVelocity` y `ProjectileDrop` de `ReplicatedStorage.AmmoTypes`.
   - **Silent Aim** sobre `Bullet.CreateBullet` (`ReplicatedStorage.Modules.FPS.Bullet`) con Hit Chance, Wall Check, FOV, Team Check y target AI/Jugadores.
+  - **Targeting** (asistente de Silent Aim): `FOV`, `Dynamic FOV`, `Aim Point` (`Selected` / `Closest` / `Random`), `Aim Parts` multi-selección (`Head`, `FaceHitBox`, `HeadTopHitBox`, `UpperTorso`, etc.), `Visible Fallback`, `Target AI`, `Wallbang` configurable (muros máximos, grosor y `NoPen`), `Add Friend` (`MB3` whitelist) y `Raycast Budget`.
   - **Weapon Mods**: No Recoil (`RecoilPattern`, `VFX.RecoilCamera`, `SettingsModule` y `springs`), No Spread (`AccuracyDeviation`), No Sway, Fast ADS y Disable Scope DOF con restauración limpia.
-  - **Hitbox Expander** (`FaceHitBox`, `HeadTopHitBox`, `Head`, `HumanoidRootPart`) con restauración automática de propiedades.
   - **TriggerBot** con retardo configurable y filtro ADS/Equipo/AI.
 - **Visuals (ESP por categoría con panel de filtros)**
   - **Player**: `Highlights`, `Box`, `Name`, `HealthBar`, `Health`, `Distance`, `KDR`, `Reports`, `Tracers`, `Arrows` (fuera de pantalla), `Skeleton`, `Held Weapon`, `Downed Badge`, filtros de escuadra y colores.
@@ -34,4 +34,4 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/jakrjone123/DeltaSuit
     - **Corpse, Container, Dropped Item y Quest Items**: Cubo 3D táctico lateral con soporte en vivo de `Chams`, `Box`/`Corner` con relleno translúcido, `Skeleton` (Corpse), `Tracers`, `Arrows` y arrastre ordenado de etiquetas (`Name`, `Distance`, `Value`, `Respawn`) entre las 4 zonas.
   - **Extractions & World**: Ubicaciones de extracción (`ExitLocations`), Fullbright, Brightness/ClockTime, No Fog (`Atmosphere`), No Blur/DOF (`Lighting` PostEffects) y Custom FOV.
 - **Settings**
-  - Tecla de menú personalizable (`RightControl` por defecto), Watermark, Target Info HUD, notificaciones, restauración completa del entorno/armas/hitboxes y descarga limpia (`Unload Delta Suite`).
+  - Tecla de menú personalizable (`RightControl` por defecto), Watermark, Target Info HUD, notificaciones, restauración completa del entorno/armas y descarga limpia (`Unload Delta Suite`).

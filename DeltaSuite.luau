@@ -2318,27 +2318,40 @@ end
 
 local function updateSkeletonVisual(d: { [string]: any }, model: Instance, cam: Camera, color: Color3, enabled: boolean)
     if enabled and model:IsA("Model") then
+        local skelCol = color:Lerp(Color3.new(1, 1, 1), 0.14)
         for i, pair in ipairs(BONE_PAIRS) do
             local line = d.Bones[i]
+            local out = d.BoneOutlines and d.BoneOutlines[i]
             local p1 = model:FindFirstChild(pair[1])
             local p2 = model:FindFirstChild(pair[2])
             if line and p1 and p1:IsA("BasePart") and p2 and p2:IsA("BasePart") then
                 local v1, ok1 = cam:WorldToViewportPoint(p1.Position)
                 local v2, ok2 = cam:WorldToViewportPoint(p2.Position)
                 if ok1 and ok2 then
-                    line.From = Vector2.new(v1.X, v1.Y)
-                    line.To = Vector2.new(v2.X, v2.Y)
-                    line.Color = color
+                    local fPos, tPos = Vector2.new(v1.X, v1.Y), Vector2.new(v2.X, v2.Y)
+                    if out then
+                        out.From = fPos
+                        out.To = tPos
+                        out.Visible = true
+                    end
+                    line.From = fPos
+                    line.To = tPos
+                    line.Color = skelCol
                     line.Visible = true
                 else
+                    if out then out.Visible = false end
                     line.Visible = false
                 end
-            elseif line then
-                line.Visible = false
+            else
+                if out then out.Visible = false end
+                if line then line.Visible = false end
             end
         end
     else
         for i = 1, #BONE_PAIRS do
+            if d.BoneOutlines and d.BoneOutlines[i] then
+                d.BoneOutlines[i].Visible = false
+            end
             if d.Bones[i] then
                 d.Bones[i].Visible = false
             end
@@ -2557,7 +2570,8 @@ CreateActorDrawings = function()
         CornerOutlines = createDrawLinePool(8, 2.0, OUTLINE_DARK, 0.72, 2),
         Box = newDraw("Square", { Thickness = 1.0, Filled = false, Transparency = 0.96, ZIndex = 3, Visible = false }),
         Corners = createDrawLinePool(8, 1.0, nil, 0.96, 3),
-        Bones = createDrawLinePool(#BONE_PAIRS, 1.15, nil, 0.88, 2),
+        BoneOutlines = createDrawLinePool(#BONE_PAIRS, 2.5, OUTLINE_DARK, 0.52, 3),
+        Bones = createDrawLinePool(#BONE_PAIRS, 1.45, nil, 0.96, 4),
         HpBg = newDraw("Square", { Thickness = 1, Filled = true, Color = OUTLINE_DARK, Transparency = 0.78, ZIndex = 2, Visible = false }),
         HpFill = newDraw("Square", { Thickness = 1, Filled = true, ZIndex = 3, Visible = false }),
         Tracer = newDraw("Line", { Thickness = 1.0, Transparency = 0.62, ZIndex = 1, Visible = false }),
@@ -2576,7 +2590,7 @@ local function hideDrawingsTable(d: { [string]: any }, hl: Highlight?, keepArrow
         if keepArrow and (k == "Arrow" or k == "ArrowOutline") then
             continue
         end
-        if k == "Corners" or k == "CornerOutlines" or k == "Bones" then
+        if k == "Corners" or k == "CornerOutlines" or k == "Bones" or k == "BoneOutlines" then
             for _, line in ipairs(v) do
                 if line then line.Visible = false end
             end
@@ -2595,7 +2609,7 @@ end
 
 local function destroyVisualEntry(d: { [string]: any }, holder: { Highlight: Highlight? })
     for k, v in pairs(d) do
-        if k == "Corners" or k == "CornerOutlines" or k == "Bones" then
+        if k == "Corners" or k == "CornerOutlines" or k == "Bones" or k == "BoneOutlines" then
             for _, line in ipairs(v) do
                 if line then pcall(function() line:Remove() end) end
             end
@@ -2624,7 +2638,8 @@ CreateTagDrawings = function()
         CornerOutlines = createDrawLinePool(8, 2.0, OUTLINE_DARK, 0.72, 2),
         Box = newDraw("Square", { Thickness = 1.0, Filled = false, Transparency = 0.96, ZIndex = 3, Visible = false }),
         Corners = createDrawLinePool(8, 1.0, nil, 0.96, 3),
-        Bones = createDrawLinePool(#BONE_PAIRS, 1.15, nil, 0.88, 2),
+        BoneOutlines = createDrawLinePool(#BONE_PAIRS, 2.5, OUTLINE_DARK, 0.52, 3),
+        Bones = createDrawLinePool(#BONE_PAIRS, 1.45, nil, 0.96, 4),
         DotOutline = newDraw("Circle", { Filled = true, Radius = 4.0, NumSides = 14, Color = OUTLINE_DARK, Transparency = 0.75, ZIndex = 2, Visible = false }),
         Dot = newDraw("Circle", { Filled = true, Radius = 2.5, NumSides = 14, ZIndex = 3, Visible = false }),
         Tracer = newDraw("Line", { Thickness = 1.0, Transparency = 0.62, ZIndex = 1, Visible = false }),
@@ -3029,7 +3044,8 @@ local function renderTagESP(tag: TagEntry, cam: Camera, vp: Vector2)
 end
 
 -- HUD FOV Circle
-local FOVCircle = newDraw("Circle", { Thickness = 1.4, NumSides = 64, Filled = false, Visible = false })
+local FOVCircleOutline = newDraw("Circle", { Thickness = 3.0, NumSides = 72, Filled = false, Color = OUTLINE_DARK, Transparency = 0.48, ZIndex = 9, Visible = false })
+local FOVCircle = newDraw("Circle", { Thickness = 1.85, NumSides = 72, Filled = false, Transparency = 0.96, ZIndex = 10, Visible = false })
 
 -- Connect Workspace & Players Event Listeners cleanly
 local function bindPlayerTracking(player: Player)
@@ -3152,6 +3168,9 @@ Session.OnStop(function()
         DestroyTagVisuals(tag)
     end
     table.clear(WorldTags)
+    if FOVCircleOutline then
+        pcall(function() FOVCircleOutline:Remove() end)
+    end
     if FOVCircle then
         pcall(function() FOVCircle:Remove() end)
     end
@@ -5317,9 +5336,10 @@ do
         local line = Instance.new("Frame")
         line.AnchorPoint = Vector2.new(0.5, 0.5)
         line.BorderSizePixel = 0
-        line.ZIndex = 5
+        line.ZIndex = 6
         line.Visible = false
         line.Parent = Stage
+        addStroke(line, Color3.fromRGB(8, 10, 14), 0.75, 0.55)
         table.insert(SkelLines, line)
     end
 
@@ -5458,7 +5478,7 @@ do
             local diff = p2 - p1
             local line = SkelLines[i]
             line.Position = UDim2.fromOffset((p1.X + p2.X) * 0.5, (p1.Y + p2.Y) * 0.5)
-            line.Size = UDim2.fromOffset(math.max(diff.Magnitude, 2), 1.6)
+            line.Size = UDim2.fromOffset(math.max(diff.Magnitude, 2), 2)
             line.Rotation = math.deg(math.atan2(diff.Y, diff.X))
         end
 
@@ -5643,9 +5663,10 @@ do
 
         -- Skeleton overlay (Player, Npc, Corpse)
         local showSkel = (cfg.Skeleton == true) and (not isCube or catKey == "Corpse")
+        local skelPreviewCol = primaryCol:Lerp(Color3.new(1, 1, 1), 0.14)
         for _, sk in ipairs(SkelLines) do
             sk.Visible = showSkel
-            sk.BackgroundColor3 = primaryCol
+            sk.BackgroundColor3 = skelPreviewCol
         end
 
         -- Tracer & Arrow visual indicator inside Preview Stage
@@ -6015,13 +6036,23 @@ Session.Bind(RunService.RenderStepped, function(dt: number)
     -- FOV Circle
     if FOVCircle then
         if Config.Aimbot.ShowFOV and (Config.Aimbot.Enabled or Config.SilentAim.Enabled) then
-            FOVCircle.Position = Targeting.GetAimOrigin2D()
-            FOVCircle.Radius = Targeting.GetEffectiveFOVRadius()
+            local fovPos = Targeting.GetAimOrigin2D()
+            local fovRad = Targeting.GetEffectiveFOVRadius()
+            if FOVCircleOutline then
+                FOVCircleOutline.Position = fovPos
+                FOVCircleOutline.Radius = fovRad
+                FOVCircleOutline.Visible = not Config.Aimbot.FOVFilled
+            end
+            FOVCircle.Position = fovPos
+            FOVCircle.Radius = fovRad
             FOVCircle.Color = Config.Aimbot.FOVColor
             FOVCircle.Filled = Config.Aimbot.FOVFilled
-            FOVCircle.Transparency = Config.Aimbot.FOVFilled and 0.14 or 0.9
+            FOVCircle.Transparency = Config.Aimbot.FOVFilled and 0.18 or 0.96
             FOVCircle.Visible = true
         else
+            if FOVCircleOutline then
+                FOVCircleOutline.Visible = false
+            end
             FOVCircle.Visible = false
         end
     end

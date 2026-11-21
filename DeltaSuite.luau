@@ -272,6 +272,7 @@ local function createDefaultConfig()
             DownedColor = Color3.fromRGB(245, 158, 11),
             ChamsFill = Color3.fromRGB(56, 189, 248),
             ChamsOutline = Color3.fromRGB(255, 255, 255),
+            SkeletonColor = Color3.fromRGB(255, 64, 64),
             Layout = createDefaultActorLayout(false),
         },
         AIESP = {
@@ -291,6 +292,7 @@ local function createDefaultConfig()
             BossColor = Color3.fromRGB(244, 63, 94),
             ChamsFill = Color3.fromRGB(251, 146, 60),
             ChamsOutline = Color3.fromRGB(255, 255, 255),
+            SkeletonColor = Color3.fromRGB(255, 138, 42),
             Layout = createDefaultActorLayout(true),
         },
         CorpseESP = {
@@ -308,6 +310,7 @@ local function createDefaultConfig()
             MaxDistance = 600,
             Color = Color3.fromRGB(192, 132, 252),
             ChamsOutline = Color3.fromRGB(255, 255, 255),
+            SkeletonColor = Color3.fromRGB(192, 112, 255),
             Layout = createDefaultTagLayout("Corpse"),
         },
         ContainerESP = {
@@ -2316,9 +2319,18 @@ local function updateBoxVisual(d: { [string]: any }, boxMode: string, x: number,
     end
 end
 
+local function strengthenColor(col: Color3): Color3
+    local h, s, v = col:ToHSV()
+    if s > 0.05 then
+        s = math.clamp(s * 1.15, s, 1)
+    end
+    v = math.clamp(v * 1.08, 0, 1)
+    return Color3.fromHSV(h, s, v)
+end
+
 local function updateSkeletonVisual(d: { [string]: any }, model: Instance, cam: Camera, color: Color3, enabled: boolean)
     if enabled and model:IsA("Model") then
-        local skelCol = color:Lerp(Color3.new(1, 1, 1), 0.14)
+        local skelCol = strengthenColor(color)
         for i, pair in ipairs(BONE_PAIRS) do
             local line = d.Bones[i]
             local out = d.BoneOutlines and d.BoneOutlines[i]
@@ -2570,8 +2582,8 @@ CreateActorDrawings = function()
         CornerOutlines = createDrawLinePool(8, 2.0, OUTLINE_DARK, 0.72, 2),
         Box = newDraw("Square", { Thickness = 1.0, Filled = false, Transparency = 0.96, ZIndex = 3, Visible = false }),
         Corners = createDrawLinePool(8, 1.0, nil, 0.96, 3),
-        BoneOutlines = createDrawLinePool(#BONE_PAIRS, 2.5, OUTLINE_DARK, 0.52, 3),
-        Bones = createDrawLinePool(#BONE_PAIRS, 1.45, nil, 0.96, 4),
+        BoneOutlines = createDrawLinePool(#BONE_PAIRS, 2.7, OUTLINE_DARK, 0.60, 3),
+        Bones = createDrawLinePool(#BONE_PAIRS, 1.6, nil, 1.0, 4),
         HpBg = newDraw("Square", { Thickness = 1, Filled = true, Color = OUTLINE_DARK, Transparency = 0.78, ZIndex = 2, Visible = false }),
         HpFill = newDraw("Square", { Thickness = 1, Filled = true, ZIndex = 3, Visible = false }),
         Tracer = newDraw("Line", { Thickness = 1.0, Transparency = 0.62, ZIndex = 1, Visible = false }),
@@ -2638,8 +2650,8 @@ CreateTagDrawings = function()
         CornerOutlines = createDrawLinePool(8, 2.0, OUTLINE_DARK, 0.72, 2),
         Box = newDraw("Square", { Thickness = 1.0, Filled = false, Transparency = 0.96, ZIndex = 3, Visible = false }),
         Corners = createDrawLinePool(8, 1.0, nil, 0.96, 3),
-        BoneOutlines = createDrawLinePool(#BONE_PAIRS, 2.5, OUTLINE_DARK, 0.52, 3),
-        Bones = createDrawLinePool(#BONE_PAIRS, 1.45, nil, 0.96, 4),
+        BoneOutlines = createDrawLinePool(#BONE_PAIRS, 2.7, OUTLINE_DARK, 0.60, 3),
+        Bones = createDrawLinePool(#BONE_PAIRS, 1.6, nil, 1.0, 4),
         DotOutline = newDraw("Circle", { Filled = true, Radius = 4.0, NumSides = 14, Color = OUTLINE_DARK, Transparency = 0.75, ZIndex = 2, Visible = false }),
         Dot = newDraw("Circle", { Filled = true, Radius = 2.5, NumSides = 14, ZIndex = 3, Visible = false }),
         Tracer = newDraw("Line", { Thickness = 1.0, Transparency = 0.62, ZIndex = 1, Visible = false }),
@@ -2877,7 +2889,8 @@ local function renderActorESP(entry: ActorEntry, cam: Camera, vp: Vector2)
         d.Tracer.Visible = false
     end
 
-    updateSkeletonVisual(d, model, cam, primaryColor, cfg.Skeleton)
+    local skelColor = (not isAI and isTeam) and Config.PlayerESP.SquadColor or (cfg.SkeletonColor or primaryColor)
+    updateSkeletonVisual(d, model, cam, skelColor, cfg.Skeleton)
 end
 
 -- Unified renderer for Corpse, Container, Dropped Item, Quest Item, and Extractions
@@ -3037,7 +3050,7 @@ local function renderTagESP(tag: TagEntry, cam: Camera, vp: Vector2)
     end
 
     if tag.Category == "Corpse" then
-        updateSkeletonVisual(d, tag.Instance, cam, color, cfg.Skeleton == true)
+        updateSkeletonVisual(d, tag.Instance, cam, cfg.SkeletonColor or color, cfg.Skeleton == true)
     else
         updateSkeletonVisual(d, tag.Instance, cam, color, false)
     end
@@ -4133,6 +4146,159 @@ function UI.AddMultiDropdown(sec: Frame, label: string, options: { string }, get
     end)
 end
 
+local function addPopupSlider(pop: Frame, label: string, minVal: number, maxVal: number, step: number, suffix: string, getter: () -> number, setter: (number) -> ()): () -> ()
+    local holder = Instance.new("Frame")
+    holder.Size = UDim2.new(1, 0, 0, 32)
+    holder.BackgroundTransparency = 1
+    holder.ZIndex = 66
+    holder.Parent = pop
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(0.65, 0, 0, 15)
+    lbl.BackgroundTransparency = 1
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextSize = 11
+    lbl.TextColor3 = THEME.TextPrimary
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Text = label
+    lbl.ZIndex = 66
+    lbl.Parent = holder
+
+    local valLbl = Instance.new("TextLabel")
+    valLbl.AnchorPoint = Vector2.new(1, 0)
+    valLbl.Position = UDim2.new(1, 0, 0, 0)
+    valLbl.Size = UDim2.new(0.35, 0, 0, 15)
+    valLbl.BackgroundTransparency = 1
+    valLbl.Font = Enum.Font.GothamMedium
+    valLbl.TextSize = 11
+    valLbl.TextColor3 = THEME.Accent
+    valLbl.TextXAlignment = Enum.TextXAlignment.Right
+    valLbl.ZIndex = 66
+    valLbl.Parent = holder
+
+    local bar = Instance.new("TextButton")
+    bar.Position = UDim2.fromOffset(0, 19)
+    bar.Size = UDim2.new(1, 0, 0, 7)
+    bar.BackgroundColor3 = THEME.BgControl
+    bar.Text = ""
+    bar.AutoButtonColor = false
+    bar.ZIndex = 66
+    bar.Parent = holder
+    addCorner(bar, 4)
+
+    local fill = Instance.new("Frame")
+    fill.Size = UDim2.fromScale(0, 1)
+    fill.BackgroundColor3 = THEME.Accent
+    fill.BorderSizePixel = 0
+    fill.ZIndex = 67
+    fill.Parent = bar
+    addCorner(fill, 4)
+
+    local function sync()
+        local v = math.clamp(getter(), minVal, maxVal)
+        local ratio = (v - minVal) / math.max(maxVal - minVal, 0.0001)
+        fill.Size = UDim2.fromScale(math.clamp(ratio, 0, 1), 1)
+        if step < 1 then
+            valLbl.Text = string.format("%.1f%s", v, suffix)
+        else
+            valLbl.Text = string.format("%.0f%s", v, suffix)
+        end
+    end
+    sync()
+
+    local sliding = false
+    local function applyX(xPos: number)
+        local w = math.max(bar.AbsoluteSize.X, 1)
+        local ratio = math.clamp((xPos - bar.AbsolutePosition.X) / w, 0, 1)
+        local raw = minVal + (maxVal - minVal) * ratio
+        local snapped = math.floor(raw / step + 0.5) * step
+        snapped = math.clamp(tonumber(string.format("%.4f", snapped)) or raw, minVal, maxVal)
+        setter(snapped)
+        sync()
+        UI.NotifyChange()
+    end
+
+    bar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            sliding = true
+            applyX(input.Position.X)
+        end
+    end)
+    local cMove = UserInputService.InputChanged:Connect(function(input)
+        if sliding and pop.Parent and input.UserInputType == Enum.UserInputType.MouseMovement then
+            applyX(input.Position.X)
+        end
+    end)
+    local cEnd = UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            sliding = false
+        end
+    end)
+    pop.Destroying:Connect(function()
+        cMove:Disconnect()
+        cEnd:Disconnect()
+    end)
+    return sync
+end
+
+local function addPopupToggle(pop: Frame, label: string, getter: () -> boolean, setter: (boolean) -> ())
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, 0, 0, 22)
+    row.BackgroundTransparency = 1
+    row.ZIndex = 66
+    row.Parent = pop
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -44, 1, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextSize = 11
+    lbl.TextColor3 = THEME.TextPrimary
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Text = label
+    lbl.ZIndex = 66
+    lbl.Parent = row
+
+    local track = Instance.new("TextButton")
+    track.AnchorPoint = Vector2.new(1, 0.5)
+    track.Position = UDim2.new(1, 0, 0.5, 0)
+    track.Size = UDim2.fromOffset(36, 18)
+    track.Text = ""
+    track.AutoButtonColor = false
+    track.ZIndex = 66
+    track.Parent = row
+    addCorner(track, 9)
+
+    local knob = Instance.new("Frame")
+    knob.AnchorPoint = Vector2.new(0, 0.5)
+    knob.Size = UDim2.fromOffset(12, 12)
+    knob.BackgroundColor3 = Color3.new(1, 1, 1)
+    knob.BorderSizePixel = 0
+    knob.ZIndex = 67
+    knob.Parent = track
+    addCorner(knob, 6)
+
+    local function sync(instant: boolean?)
+        local on = getter()
+        local tCol = on and THEME.Accent or THEME.BgControl
+        local kPos = on and UDim2.new(1, -15, 0.5, 0) or UDim2.new(0, 3, 0.5, 0)
+        if instant then
+            track.BackgroundColor3 = tCol
+            knob.Position = kPos
+        else
+            quickTween(track, { BackgroundColor3 = tCol }, 0.14)
+            quickTween(knob, { Position = kPos }, 0.14)
+        end
+    end
+    sync(true)
+
+    track.MouseButton1Click:Connect(function()
+        setter(not getter())
+        sync(false)
+        UI.NotifyChange()
+    end)
+end
+
 function UI.AddColorPicker(sec: Frame, label: string, getter: () -> Color3, setter: (Color3) -> ())
     local row = Instance.new("Frame")
     row.Size = UDim2.new(1, 0, 0, 24)
@@ -4162,15 +4328,17 @@ function UI.AddColorPicker(sec: Frame, label: string, getter: () -> Color3, sett
 
     local PRESETS = {
         Color3.fromRGB(56, 189, 248),
-        Color3.fromRGB(239, 68, 68),
+        Color3.fromRGB(255, 64, 64),
         Color3.fromRGB(34, 197, 94),
         Color3.fromRGB(245, 158, 11),
         Color3.fromRGB(168, 85, 247),
         Color3.fromRGB(250, 204, 21),
-        Color3.fromRGB(251, 146, 60),
+        Color3.fromRGB(255, 138, 42),
         Color3.fromRGB(45, 212, 191),
         Color3.fromRGB(244, 63, 94),
         Color3.fromRGB(255, 255, 255),
+        Color3.fromRGB(132, 204, 22),
+        Color3.fromRGB(236, 72, 153),
     }
 
     table.insert(UI._Refreshers, function()
@@ -4183,23 +4351,78 @@ function UI.AddColorPicker(sec: Frame, label: string, getter: () -> Color3, sett
             return
         end
         IgnoreNextPopupDismiss = true
+        local popW, popH = 186, 180
+        local layerSize = PopupLayer.AbsoluteSize
+        local px = math.clamp(swatch.AbsolutePosition.X - popW + 32, 8, math.max(8, layerSize.X - popW - 8))
+        local py = swatch.AbsolutePosition.Y + 24
+        if layerSize.Y > 0 and py + popH > layerSize.Y - 8 then
+            py = math.max(8, swatch.AbsolutePosition.Y - popH - 4)
+        end
+
         local pop = Instance.new("Frame")
-        pop.Position = UDim2.fromOffset(swatch.AbsolutePosition.X - 118, swatch.AbsolutePosition.Y + 24)
-        pop.Size = UDim2.fromOffset(152, 64)
+        pop.Position = UDim2.fromOffset(px, py)
+        pop.Size = UDim2.fromOffset(popW, popH)
         pop.BackgroundColor3 = THEME.BgSidebar
         pop.ZIndex = 65
         pop.Parent = PopupLayer
-        addCorner(pop, 7)
-        addStroke(pop, THEME.Border, 1, 0)
+        addCorner(pop, 8)
+        addStroke(pop, THEME.Accent, 1, 0.45)
+
+        local presetsGrid = Instance.new("Frame")
+        presetsGrid.Position = UDim2.fromOffset(10, 8)
+        presetsGrid.Size = UDim2.fromOffset(popW - 20, 48)
+        presetsGrid.BackgroundTransparency = 1
+        presetsGrid.ZIndex = 66
+        presetsGrid.Parent = pop
 
         local grid = Instance.new("UIGridLayout")
-        grid.CellSize = UDim2.fromOffset(22, 22)
-        grid.CellPadding = UDim2.fromOffset(6, 6)
-        grid.Parent = pop
-        local pad = Instance.new("UIPadding")
-        pad.PaddingTop = UDim.new(0, 7)
-        pad.PaddingLeft = UDim.new(0, 9)
-        pad.Parent = pop
+        grid.CellSize = UDim2.fromOffset(22, 20)
+        grid.CellPadding = UDim2.fromOffset(6, 5)
+        grid.Parent = presetsGrid
+
+        local slidersBox = Instance.new("Frame")
+        slidersBox.Position = UDim2.fromOffset(10, 62)
+        slidersBox.Size = UDim2.fromOffset(popW - 20, popH - 70)
+        slidersBox.BackgroundTransparency = 1
+        slidersBox.ZIndex = 66
+        slidersBox.Parent = pop
+        local sList = Instance.new("UIListLayout")
+        sList.Padding = UDim.new(0, 6)
+        sList.Parent = slidersBox
+
+        local curH, curS, curV = getter():ToHSV()
+        local syncSliders: { () -> () } = {}
+        local function applyHSV()
+            local nextCol = Color3.fromHSV(curH, curS, curV)
+            setter(nextCol)
+            swatch.BackgroundColor3 = nextCol
+        end
+
+        table.insert(syncSliders, addPopupSlider(pop, "Hue", 0, 360, 1, "°", function()
+            return math.floor(curH * 360 + 0.5)
+        end, function(deg)
+            curH = math.clamp(deg / 360, 0, 1)
+            applyHSV()
+        end))
+        table.insert(syncSliders, addPopupSlider(pop, "Saturation", 0, 100, 1, "%", function()
+            return math.floor(curS * 100 + 0.5)
+        end, function(pct)
+            curS = math.clamp(pct / 100, 0, 1)
+            applyHSV()
+        end))
+        table.insert(syncSliders, addPopupSlider(pop, "Brightness", 10, 100, 1, "%", function()
+            return math.floor(curV * 100 + 0.5)
+        end, function(pct)
+            curV = math.clamp(pct / 100, 0.1, 1)
+            applyHSV()
+        end))
+
+        -- Reparent slider holders cleanly inside slidersBox while pop.Destroying still cleans up drag listeners
+        for _, child in ipairs(pop:GetChildren()) do
+            if child ~= presetsGrid and child ~= slidersBox and child:IsA("Frame") then
+                child.Parent = slidersBox
+            end
+        end
 
         for _, col in ipairs(PRESETS) do
             local b = Instance.new("TextButton")
@@ -4207,15 +4430,20 @@ function UI.AddColorPicker(sec: Frame, label: string, getter: () -> Color3, sett
             b.Text = ""
             b.AutoButtonColor = false
             b.ZIndex = 66
-            b.Parent = pop
+            b.Parent = presetsGrid
             addCorner(b, 5)
+            addStroke(b, THEME.Border, 1, 0.35)
             b.MouseButton1Click:Connect(function()
+                curH, curS, curV = col:ToHSV()
                 setter(col)
                 swatch.BackgroundColor3 = col
-                closeActivePopup()
+                for _, fn in ipairs(syncSliders) do
+                    fn()
+                end
                 UI.NotifyChange()
             end)
         end
+
         ActivePopup = pop
     end)
 end
@@ -4489,158 +4717,6 @@ function UI.AddToggleWithConfig(
     end)
 end
 
-local function addPopupSlider(pop: Frame, label: string, minVal: number, maxVal: number, step: number, suffix: string, getter: () -> number, setter: (number) -> ())
-    local holder = Instance.new("Frame")
-    holder.Size = UDim2.new(1, 0, 0, 32)
-    holder.BackgroundTransparency = 1
-    holder.ZIndex = 66
-    holder.Parent = pop
-
-    local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(0.65, 0, 0, 15)
-    lbl.BackgroundTransparency = 1
-    lbl.Font = Enum.Font.Gotham
-    lbl.TextSize = 11
-    lbl.TextColor3 = THEME.TextPrimary
-    lbl.TextXAlignment = Enum.TextXAlignment.Left
-    lbl.Text = label
-    lbl.ZIndex = 66
-    lbl.Parent = holder
-
-    local valLbl = Instance.new("TextLabel")
-    valLbl.AnchorPoint = Vector2.new(1, 0)
-    valLbl.Position = UDim2.new(1, 0, 0, 0)
-    valLbl.Size = UDim2.new(0.35, 0, 0, 15)
-    valLbl.BackgroundTransparency = 1
-    valLbl.Font = Enum.Font.GothamMedium
-    valLbl.TextSize = 11
-    valLbl.TextColor3 = THEME.Accent
-    valLbl.TextXAlignment = Enum.TextXAlignment.Right
-    valLbl.ZIndex = 66
-    valLbl.Parent = holder
-
-    local bar = Instance.new("TextButton")
-    bar.Position = UDim2.fromOffset(0, 19)
-    bar.Size = UDim2.new(1, 0, 0, 7)
-    bar.BackgroundColor3 = THEME.BgControl
-    bar.Text = ""
-    bar.AutoButtonColor = false
-    bar.ZIndex = 66
-    bar.Parent = holder
-    addCorner(bar, 4)
-
-    local fill = Instance.new("Frame")
-    fill.Size = UDim2.fromScale(0, 1)
-    fill.BackgroundColor3 = THEME.Accent
-    fill.BorderSizePixel = 0
-    fill.ZIndex = 67
-    fill.Parent = bar
-    addCorner(fill, 4)
-
-    local function sync()
-        local v = math.clamp(getter(), minVal, maxVal)
-        local ratio = (v - minVal) / math.max(maxVal - minVal, 0.0001)
-        fill.Size = UDim2.fromScale(math.clamp(ratio, 0, 1), 1)
-        if step < 1 then
-            valLbl.Text = string.format("%.1f%s", v, suffix)
-        else
-            valLbl.Text = string.format("%.0f%s", v, suffix)
-        end
-    end
-    sync()
-
-    local sliding = false
-    local function applyX(xPos: number)
-        local w = math.max(bar.AbsoluteSize.X, 1)
-        local ratio = math.clamp((xPos - bar.AbsolutePosition.X) / w, 0, 1)
-        local raw = minVal + (maxVal - minVal) * ratio
-        local snapped = math.floor(raw / step + 0.5) * step
-        snapped = math.clamp(tonumber(string.format("%.4f", snapped)) or raw, minVal, maxVal)
-        setter(snapped)
-        sync()
-        UI.NotifyChange()
-    end
-
-    bar.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            sliding = true
-            applyX(input.Position.X)
-        end
-    end)
-    local cMove = UserInputService.InputChanged:Connect(function(input)
-        if sliding and pop.Parent and input.UserInputType == Enum.UserInputType.MouseMovement then
-            applyX(input.Position.X)
-        end
-    end)
-    local cEnd = UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            sliding = false
-        end
-    end)
-    pop.Destroying:Connect(function()
-        cMove:Disconnect()
-        cEnd:Disconnect()
-    end)
-end
-
-local function addPopupToggle(pop: Frame, label: string, getter: () -> boolean, setter: (boolean) -> ())
-    local row = Instance.new("Frame")
-    row.Size = UDim2.new(1, 0, 0, 22)
-    row.BackgroundTransparency = 1
-    row.ZIndex = 66
-    row.Parent = pop
-
-    local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(1, -44, 1, 0)
-    lbl.BackgroundTransparency = 1
-    lbl.Font = Enum.Font.Gotham
-    lbl.TextSize = 11
-    lbl.TextColor3 = THEME.TextPrimary
-    lbl.TextXAlignment = Enum.TextXAlignment.Left
-    lbl.Text = label
-    lbl.ZIndex = 66
-    lbl.Parent = row
-
-    local track = Instance.new("TextButton")
-    track.AnchorPoint = Vector2.new(1, 0.5)
-    track.Position = UDim2.new(1, 0, 0.5, 0)
-    track.Size = UDim2.fromOffset(36, 18)
-    track.Text = ""
-    track.AutoButtonColor = false
-    track.ZIndex = 66
-    track.Parent = row
-    addCorner(track, 9)
-
-    local knob = Instance.new("Frame")
-    knob.AnchorPoint = Vector2.new(0, 0.5)
-    knob.Size = UDim2.fromOffset(12, 12)
-    knob.BackgroundColor3 = Color3.new(1, 1, 1)
-    knob.BorderSizePixel = 0
-    knob.ZIndex = 67
-    knob.Parent = track
-    addCorner(knob, 6)
-
-    local function sync(instant: boolean?)
-        local on = getter()
-        local tCol = on and THEME.Accent or THEME.BgControl
-        local kPos = on and UDim2.new(1, -15, 0.5, 0) or UDim2.new(0, 3, 0.5, 0)
-        if instant then
-            track.BackgroundColor3 = tCol
-            knob.Position = kPos
-        else
-            quickTween(track, { BackgroundColor3 = tCol }, 0.14)
-            quickTween(knob, { Position = kPos }, 0.14)
-        end
-    end
-    sync(true)
-
-    track.MouseButton1Click:Connect(function()
-        setter(not getter())
-        sync(false)
-        UI.NotifyChange()
-    end)
-end
-
 -- ============================================================================
 -- 10. POPULATE TABS (COMBAT, VISUALS, SETTINGS ONLY)
 -- ============================================================================
@@ -4906,6 +4982,7 @@ do
         UI.AddColorPicker(p, "Enemy Color", function() return Config.PlayerESP.EnemyColor end, function(c) Config.PlayerESP.EnemyColor = c end)
         UI.AddColorPicker(p, "Squad Color", function() return Config.PlayerESP.SquadColor end, function(c) Config.PlayerESP.SquadColor = c end)
         UI.AddColorPicker(p, "Highlight Color", function() return Config.PlayerESP.ChamsFill end, function(c) Config.PlayerESP.ChamsFill = c end)
+        UI.AddColorPicker(p, "Skeleton Color", function() return Config.PlayerESP.SkeletonColor end, function(c) Config.PlayerESP.SkeletonColor = c end)
     end
 
     -- 2. Npc Filters (highlight, box, name, healthbar, health, distance, tracers, arrows, skeleton)
@@ -4925,6 +5002,7 @@ do
         UI.AddColorPicker(p, "NPC Color", function() return Config.AIESP.Color end, function(c) Config.AIESP.Color = c end)
         UI.AddColorPicker(p, "Boss Color", function() return Config.AIESP.BossColor end, function(c) Config.AIESP.BossColor = c end)
         UI.AddColorPicker(p, "Highlight Color", function() return Config.AIESP.ChamsFill end, function(c) Config.AIESP.ChamsFill = c end)
+        UI.AddColorPicker(p, "Skeleton Color", function() return Config.AIESP.SkeletonColor end, function(c) Config.AIESP.SkeletonColor = c end)
     end
 
     -- 3. Corpse Filters (chams, box, name, distance, value, tracers, arrows, skeleton)
@@ -4941,6 +5019,7 @@ do
         UI.AddToggle(p, "Hide Empty", function() return Config.CorpseESP.HideEmpty end, function(v) Config.CorpseESP.HideEmpty = v end)
         UI.AddSlider(p, "Max Distance", 50, 1200, 25, "m", function() return Config.CorpseESP.MaxDistance end, function(v) Config.CorpseESP.MaxDistance = v end)
         UI.AddColorPicker(p, "Corpse Color", function() return Config.CorpseESP.Color end, function(c) Config.CorpseESP.Color = c end)
+        UI.AddColorPicker(p, "Skeleton Color", function() return Config.CorpseESP.SkeletonColor end, function(c) Config.CorpseESP.SkeletonColor = c end)
     end
 
     -- 4. Container Filters (chams, box, name, distance, value, respawn, tracers, arrows)
@@ -5663,7 +5742,7 @@ do
 
         -- Skeleton overlay (Player, Npc, Corpse)
         local showSkel = (cfg.Skeleton == true) and (not isCube or catKey == "Corpse")
-        local skelPreviewCol = primaryCol:Lerp(Color3.new(1, 1, 1), 0.14)
+        local skelPreviewCol = strengthenColor(cfg.SkeletonColor or primaryCol)
         for _, sk in ipairs(SkelLines) do
             sk.Visible = showSkel
             sk.BackgroundColor3 = skelPreviewCol

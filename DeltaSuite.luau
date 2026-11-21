@@ -155,6 +155,31 @@ local function createDefaultActorLayout(isAI: boolean): { Top: { string }, Botto
     }
 end
 
+local function createDefaultTagLayout(catKey: string): { Top: { string }, Bottom: { string }, Left: { string }, Right: { string } }
+    if catKey == "Container" then
+        return {
+            Top = { "Name" },
+            Bottom = { "Distance", "Value", "Respawn" },
+            Left = {},
+            Right = {},
+        }
+    elseif catKey == "Quest Items" then
+        return {
+            Top = { "Name" },
+            Bottom = { "Distance" },
+            Left = {},
+            Right = {},
+        }
+    end
+    -- Corpse & Dropped Item
+    return {
+        Top = { "Name" },
+        Bottom = { "Distance", "Value" },
+        Left = {},
+        Right = {},
+    }
+end
+
 local function createDefaultConfig()
     return {
         Aimbot = {
@@ -279,6 +304,7 @@ local function createDefaultConfig()
             MaxDistance = 600,
             Color = Color3.fromRGB(192, 132, 252),
             ChamsOutline = Color3.fromRGB(255, 255, 255),
+            Layout = createDefaultTagLayout("Corpse"),
         },
         ContainerESP = {
             Enabled = false,
@@ -297,6 +323,7 @@ local function createDefaultConfig()
             Color = Color3.fromRGB(96, 165, 250),
             ValuableColor = Color3.fromRGB(250, 204, 21),
             ChamsOutline = Color3.fromRGB(255, 255, 255),
+            Layout = createDefaultTagLayout("Container"),
         },
         DroppedESP = {
             Enabled = false,
@@ -313,6 +340,7 @@ local function createDefaultConfig()
             Color = Color3.fromRGB(45, 212, 191),
             ValuableColor = Color3.fromRGB(250, 204, 21),
             ChamsOutline = Color3.fromRGB(255, 255, 255),
+            Layout = createDefaultTagLayout("Dropped Item"),
         },
         QuestESP = {
             Enabled = true,
@@ -325,6 +353,7 @@ local function createDefaultConfig()
             MaxDistance = 1200,
             Color = Color3.fromRGB(250, 204, 21),
             ChamsOutline = Color3.fromRGB(255, 255, 255),
+            Layout = createDefaultTagLayout("Quest Items"),
         },
         ExitESP = {
             Enabled = true,
@@ -1472,7 +1501,11 @@ function Combat.ApplyWeaponMods()
                 tbl.AimOutSpeed = Config.WeaponMods.FastADS and Config.WeaponMods.ADSSpeed or orig.AimOutSpeed
             end
             if orig.useDof ~= nil then
-                tbl.useDof = Config.WeaponMods.NoScopeDOF and false or orig.useDof
+                if Config.WeaponMods.NoScopeDOF then
+                    tbl.useDof = false
+                else
+                    tbl.useDof = orig.useDof
+                end
             end
         end
     end
@@ -1999,24 +2032,33 @@ local BONE_PAIRS = {
     { "RightLowerLeg", "RightFoot" },
 }
 
-local function setCornerBox(lines: { any }, x: number, y: number, w: number, h: number, color: Color3)
-    local lenX = math.max(w * 0.28, 4)
-    local lenY = math.max(h * 0.22, 4)
+local function setCornerBox(lines: { any }, outlines: { any }?, x: number, y: number, w: number, h: number, color: Color3)
+    local px, py = math.floor(x + 0.5), math.floor(y + 0.5)
+    local pw, ph = math.max(math.floor(w + 0.5), 6), math.max(math.floor(h + 0.5), 6)
+    local lenX = math.max(math.floor(pw * 0.28), 4)
+    local lenY = math.max(math.floor(ph * 0.22), 4)
     local coords = {
-        { Vector2.new(x, y), Vector2.new(x + lenX, y) },
-        { Vector2.new(x, y), Vector2.new(x, y + lenY) },
-        { Vector2.new(x + w, y), Vector2.new(x + w - lenX, y) },
-        { Vector2.new(x + w, y), Vector2.new(x + w, y + lenY) },
-        { Vector2.new(x, y + h), Vector2.new(x + lenX, y + h) },
-        { Vector2.new(x, y + h), Vector2.new(x, y + h - lenY) },
-        { Vector2.new(x + w, y + h), Vector2.new(x + w - lenX, y + h) },
-        { Vector2.new(x + w, y + h), Vector2.new(x + w, y + h - lenY) },
+        { Vector2.new(px, py), Vector2.new(px + lenX, py) },
+        { Vector2.new(px, py), Vector2.new(px, py + lenY) },
+        { Vector2.new(px + pw, py), Vector2.new(px + pw - lenX, py) },
+        { Vector2.new(px + pw, py), Vector2.new(px + pw, py + lenY) },
+        { Vector2.new(px, py + ph), Vector2.new(px + lenX, py + ph) },
+        { Vector2.new(px, py + ph), Vector2.new(px, py + ph - lenY) },
+        { Vector2.new(px + pw, py + ph), Vector2.new(px + pw - lenX, py + ph) },
+        { Vector2.new(px + pw, py + ph), Vector2.new(px + pw, py + ph - lenY) },
     }
     for i = 1, 8 do
+        local p1, p2 = coords[i][1], coords[i][2]
+        local out = outlines and outlines[i]
+        if out then
+            out.From = p1
+            out.To = p2
+            out.Visible = true
+        end
         local line = lines[i]
         if line then
-            line.From = coords[i][1]
-            line.To = coords[i][2]
+            line.From = p1
+            line.To = p2
             line.Color = color
             line.Visible = true
         end
@@ -2024,25 +2066,42 @@ local function setCornerBox(lines: { any }, x: number, y: number, w: number, h: 
 end
 
 local function updateBoxVisual(d: { [string]: any }, boxMode: string, x: number, y: number, w: number, h: number, color: Color3)
+    local px, py = math.floor(x + 0.5), math.floor(y + 0.5)
+    local pw, ph = math.max(math.floor(w + 0.5), 6), math.max(math.floor(h + 0.5), 6)
     if boxMode == "2D" then
-        d.BoxOutline.Size = Vector2.new(w, h)
-        d.BoxOutline.Position = Vector2.new(x, y)
+        if d.BoxFill then
+            d.BoxFill.Size = Vector2.new(pw, ph)
+            d.BoxFill.Position = Vector2.new(px, py)
+            d.BoxFill.Color = color
+            d.BoxFill.Visible = true
+        end
+        d.BoxOutline.Size = Vector2.new(pw, ph)
+        d.BoxOutline.Position = Vector2.new(px, py)
         d.BoxOutline.Visible = true
-        d.Box.Size = Vector2.new(w, h)
-        d.Box.Position = Vector2.new(x, y)
+        d.Box.Size = Vector2.new(pw, ph)
+        d.Box.Position = Vector2.new(px, py)
         d.Box.Color = color
         d.Box.Visible = true
         for i = 1, 8 do
+            if d.CornerOutlines and d.CornerOutlines[i] then d.CornerOutlines[i].Visible = false end
             d.Corners[i].Visible = false
         end
     elseif boxMode == "Corner" then
+        if d.BoxFill then
+            d.BoxFill.Size = Vector2.new(pw, ph)
+            d.BoxFill.Position = Vector2.new(px, py)
+            d.BoxFill.Color = color
+            d.BoxFill.Visible = true
+        end
         d.BoxOutline.Visible = false
         d.Box.Visible = false
-        setCornerBox(d.Corners, x, y, w, h, color)
+        setCornerBox(d.Corners, d.CornerOutlines, px, py, pw, ph, color)
     else
+        if d.BoxFill then d.BoxFill.Visible = false end
         d.BoxOutline.Visible = false
         d.Box.Visible = false
         for i = 1, 8 do
+            if d.CornerOutlines and d.CornerOutlines[i] then d.CornerOutlines[i].Visible = false end
             d.Corners[i].Visible = false
         end
     end
@@ -2131,8 +2190,8 @@ local function updateHighlightChams(holder: { Highlight: Highlight? }, target: I
             local hl = Instance.new("Highlight")
             hl.Name = "__DeltaChams"
             hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-            hl.FillTransparency = 0.52
-            hl.OutlineTransparency = 0.08
+            hl.FillTransparency = 0.62
+            hl.OutlineTransparency = 0.05
             hl.Parent = target
             Session.Track(hl)
             holder.Highlight = hl
@@ -2143,6 +2202,71 @@ local function updateHighlightChams(holder: { Highlight: Highlight? }, target: I
     elseif holder.Highlight then
         holder.Highlight.Enabled = false
     end
+end
+
+local ACTOR_BOX_SAMPLE_PARTS = {
+    "Head",
+    "UpperTorso",
+    "LowerTorso",
+    "LeftUpperArm",
+    "RightUpperArm",
+    "LeftFoot",
+    "RightFoot",
+    "HumanoidRootPart",
+}
+
+local function computeActorScreenBox(model: Model, root: BasePart, cam: Camera): (boolean, number, number, number, number)
+    local head = model:FindFirstChild("Head") :: BasePart?
+    local minX, minY = math.huge, math.huge
+    local maxX, maxY = -math.huge, -math.huge
+    local anyVis = false
+
+    local topAnchor = (head and head.Position or root.Position) + Vector3.new(0, 0.72, 0)
+    local botAnchor = root.Position - Vector3.new(0, 2.85, 0)
+    local feet = { model:FindFirstChild("LeftFoot"), model:FindFirstChild("RightFoot") }
+    local lowY = math.huge
+    for _, f in ipairs(feet) do
+        if f and f:IsA("BasePart") then
+            lowY = math.min(lowY, f.Position.Y - 0.35)
+        end
+    end
+    if lowY < math.huge then
+        botAnchor = Vector3.new(root.Position.X, lowY, root.Position.Z)
+    end
+
+    local t2d, tVis = cam:WorldToViewportPoint(topAnchor)
+    local b2d, bVis = cam:WorldToViewportPoint(botAnchor)
+    if not tVis and not bVis then
+        return false, 0, 0, 0, 0
+    end
+    minY = math.min(t2d.Y, b2d.Y)
+    maxY = math.max(t2d.Y, b2d.Y)
+
+    for _, pName in ipairs(ACTOR_BOX_SAMPLE_PARTS) do
+        local p = model:FindFirstChild(pName)
+        if p and p:IsA("BasePart") then
+            local sp, onScr = cam:WorldToViewportPoint(p.Position)
+            if onScr then
+                anyVis = true
+            end
+            if sp.Z > 0 then
+                minX = math.min(minX, sp.X)
+                maxX = math.max(maxX, sp.X)
+                minY = math.min(minY, sp.Y)
+                maxY = math.max(maxY, sp.Y)
+            end
+        end
+    end
+    if not anyVis then
+        return false, 0, 0, 0, 0
+    end
+
+    local boxH = math.max(maxY - minY, 10)
+    local minWidth = math.max(boxH * 0.56, 8)
+    local measuredW = (maxX > minX) and (maxX - minX + boxH * 0.14) or minWidth
+    local boxW = math.clamp(math.max(measuredW, minWidth), 8, math.max(boxH * 1.15, 24))
+    local cx = (t2d.X + b2d.X) * 0.5
+    return true, math.floor(cx - boxW * 0.5 + 0.5), math.floor(minY + 0.5), math.floor(boxW + 0.5), math.floor(boxH + 0.5)
 end
 
 local function compute3DScreenBox(inst: Instance, fallbackRoot: BasePart, cam: Camera): (boolean, number, number, number, number)
@@ -2190,28 +2314,37 @@ local function computeHealthColor(ratio: number): Color3
 end
 
 local ACTOR_LABEL_KEYS = { "Name", "Health", "Distance", "KDR", "Reports", "Weapon", "Downed" }
+local TAG_LABEL_KEYS = { "Name", "Distance", "Value", "Respawn" }
+
+local function createDrawLinePool(count: number, thickness: number, color: Color3?): { any }
+    local arr = {}
+    for i = 1, count do
+        local props: { [string]: any } = { Thickness = thickness, Visible = false }
+        if color then
+            props.Color = color
+        end
+        arr[i] = newDraw("Line", props)
+    end
+    return arr
+end
 
 CreateActorDrawings = function()
     local d: { [string]: any } = {
-        BoxOutline = newDraw("Square", { Thickness = 3, Filled = false, Color = Color3.new(0, 0, 0), Visible = false }),
-        Box = newDraw("Square", { Thickness = 1.5, Filled = false, Visible = false }),
-        Corners = {},
+        BoxFill = newDraw("Square", { Thickness = 1, Filled = true, Transparency = 0.08, Visible = false }),
+        BoxOutline = newDraw("Square", { Thickness = 2.8, Filled = false, Color = Color3.new(0, 0, 0), Visible = false }),
+        CornerOutlines = createDrawLinePool(8, 3.0, Color3.new(0, 0, 0)),
+        Box = newDraw("Square", { Thickness = 1.2, Filled = false, Visible = false }),
+        Corners = createDrawLinePool(8, 1.3),
+        Bones = createDrawLinePool(#BONE_PAIRS, 1.4),
         HpBg = newDraw("Square", { Thickness = 1, Filled = true, Color = Color3.new(0, 0, 0), Visible = false }),
         HpFill = newDraw("Square", { Thickness = 1, Filled = true, Visible = false }),
+        Tracer = newDraw("Line", { Thickness = 1.1, Transparency = 0.72, Visible = false }),
         Labels = {},
-        Tracer = newDraw("Line", { Thickness = 1.3, Visible = false }),
         ArrowOutline = newDraw("Triangle", { Filled = true, Color = Color3.new(0, 0, 0), Visible = false }),
         Arrow = newDraw("Triangle", { Filled = true, Visible = false }),
-        Bones = {},
     }
     for _, key in ipairs(ACTOR_LABEL_KEYS) do
         d.Labels[key] = newDraw("Text", { Center = true, Outline = true, Size = 13, Font = 2, Visible = false })
-    end
-    for i = 1, 8 do
-        d.Corners[i] = newDraw("Line", { Thickness = 1.6, Visible = false })
-    end
-    for i = 1, #BONE_PAIRS do
-        d.Bones[i] = newDraw("Line", { Thickness = 1.2, Visible = false })
     end
     return d
 end
@@ -2221,7 +2354,7 @@ local function hideDrawingsTable(d: { [string]: any }, hl: Highlight?, keepArrow
         if keepArrow and (k == "Arrow" or k == "ArrowOutline") then
             continue
         end
-        if k == "Corners" or k == "Bones" then
+        if k == "Corners" or k == "CornerOutlines" or k == "Bones" then
             for _, line in ipairs(v) do
                 if line then line.Visible = false end
             end
@@ -2240,7 +2373,7 @@ end
 
 local function destroyVisualEntry(d: { [string]: any }, holder: { Highlight: Highlight? })
     for k, v in pairs(d) do
-        if k == "Corners" or k == "Bones" then
+        if k == "Corners" or k == "CornerOutlines" or k == "Bones" then
             for _, line in ipairs(v) do
                 if line then pcall(function() line:Remove() end) end
             end
@@ -2264,28 +2397,131 @@ end
 
 CreateTagDrawings = function()
     local d: { [string]: any } = {
-        BoxOutline = newDraw("Square", { Thickness = 3, Filled = false, Color = Color3.new(0, 0, 0), Visible = false }),
-        Box = newDraw("Square", { Thickness = 1.5, Filled = false, Visible = false }),
-        Corners = {},
-        Label = newDraw("Text", { Center = true, Outline = true, Size = 13, Font = 2, Visible = false }),
-        Sub = newDraw("Text", { Center = true, Outline = true, Size = 11, Font = 2, Visible = false }),
-        Dot = newDraw("Circle", { Filled = true, Radius = 3.2, NumSides = 12, Visible = false }),
-        Tracer = newDraw("Line", { Thickness = 1.2, Visible = false }),
+        BoxFill = newDraw("Square", { Thickness = 1, Filled = true, Transparency = 0.08, Visible = false }),
+        BoxOutline = newDraw("Square", { Thickness = 2.8, Filled = false, Color = Color3.new(0, 0, 0), Visible = false }),
+        CornerOutlines = createDrawLinePool(8, 3.0, Color3.new(0, 0, 0)),
+        Box = newDraw("Square", { Thickness = 1.2, Filled = false, Visible = false }),
+        Corners = createDrawLinePool(8, 1.3),
+        Bones = createDrawLinePool(#BONE_PAIRS, 1.3),
+        DotOutline = newDraw("Circle", { Filled = true, Radius = 4.4, NumSides = 14, Color = Color3.new(0, 0, 0), Visible = false }),
+        Dot = newDraw("Circle", { Filled = true, Radius = 2.7, NumSides = 14, Visible = false }),
+        Tracer = newDraw("Line", { Thickness = 1.1, Transparency = 0.72, Visible = false }),
+        Labels = {},
         ArrowOutline = newDraw("Triangle", { Filled = true, Color = Color3.new(0, 0, 0), Visible = false }),
         Arrow = newDraw("Triangle", { Filled = true, Visible = false }),
-        Bones = {},
     }
-    for i = 1, 8 do
-        d.Corners[i] = newDraw("Line", { Thickness = 1.5, Visible = false })
-    end
-    for i = 1, #BONE_PAIRS do
-        d.Bones[i] = newDraw("Line", { Thickness = 1.1, Visible = false })
+    for _, key in ipairs(TAG_LABEL_KEYS) do
+        d.Labels[key] = newDraw("Text", { Center = true, Outline = true, Size = 13, Font = 2, Visible = false })
     end
     return d
 end
 
 DestroyTagVisuals = function(entry: TagEntry)
     destroyVisualEntry(entry.Draw, entry)
+end
+
+local function formatCompactMoney(amount: number): string
+    if amount >= 1000 then
+        return string.format("$%.1fk", amount / 1000)
+    end
+    return string.format("$%.0f", amount)
+end
+
+-- Shared 4-zone stacked label + adaptive HealthBar renderer (used by Players, Npcs, and all World Cubes/Tags)
+local function renderDockedLabels(
+    d: { [string]: any },
+    values: { [string]: { Text: string, Color: Color3, Size: number } },
+    layout: { Top: { string }, Bottom: { string }, Left: { string }, Right: { string } },
+    allowHpBar: boolean,
+    hpRatio: number,
+    boxX: number,
+    boxY: number,
+    boxW: number,
+    boxH: number,
+    lineStep: number
+)
+    for _, lbl in pairs(d.Labels) do
+        lbl.Visible = false
+    end
+    if d.HpBg then d.HpBg.Visible = false end
+    if d.HpFill then d.HpFill.Visible = false end
+
+    for _, zoneName in ipairs({ "Top", "Bottom", "Left", "Right" }) do
+        local list = layout[zoneName] or {}
+        local hasHpBar = false
+        local textKeys: { string } = {}
+        for _, key in ipairs(list) do
+            if key == "HealthBar" then
+                if allowHpBar and d.HpBg and d.HpFill then
+                    hasHpBar = true
+                end
+            elseif values[key] and d.Labels[key] then
+                table.insert(textKeys, key)
+            end
+        end
+
+        if hasHpBar then
+            if zoneName == "Left" or zoneName == "Right" then
+                local barW = 3
+                local barX = math.floor(((zoneName == "Left") and (boxX - 6) or (boxX + boxW + 3)) + 0.5)
+                local fillH = math.max(math.floor(boxH * hpRatio + 0.5), 1)
+                d.HpBg.Position = Vector2.new(barX - 1, boxY - 1)
+                d.HpBg.Size = Vector2.new(barW + 2, boxH + 2)
+                d.HpBg.Visible = true
+                d.HpFill.Position = Vector2.new(barX, boxY + (boxH - fillH))
+                d.HpFill.Size = Vector2.new(barW, fillH)
+                d.HpFill.Color = computeHealthColor(hpRatio)
+                d.HpFill.Visible = true
+            else
+                local barH = 3
+                local barY = math.floor(((zoneName == "Top") and (boxY - 6) or (boxY + boxH + 3)) + 0.5)
+                local fillW = math.max(math.floor(boxW * hpRatio + 0.5), 1)
+                d.HpBg.Position = Vector2.new(boxX - 1, barY - 1)
+                d.HpBg.Size = Vector2.new(boxW + 2, barH + 2)
+                d.HpBg.Visible = true
+                d.HpFill.Position = Vector2.new(boxX, barY)
+                d.HpFill.Size = Vector2.new(fillW, barH)
+                d.HpFill.Color = computeHealthColor(hpRatio)
+                d.HpFill.Visible = true
+            end
+        end
+
+        local n = #textKeys
+        if n > 0 then
+            local barPad = hasHpBar and 7 or 3
+            local centerX = math.floor(boxX + boxW * 0.5 + 0.5)
+            local totalTextH = n * lineStep
+            local sideStartY = math.floor(boxY + math.max((boxH - totalTextH) * 0.5, 0) + 0.5)
+
+            for idx, key in ipairs(textKeys) do
+                local lbl = d.Labels[key]
+                local info = values[key]
+                lbl.Text = info.Text
+                lbl.Color = info.Color
+                lbl.Size = info.Size
+                if zoneName == "Top" then
+                    lbl.Center = true
+                    local bottomOfStack = boxY - barPad - 1
+                    local rowY = math.floor(bottomOfStack - (n - idx + 1) * lineStep + 0.5)
+                    lbl.Position = Vector2.new(centerX, rowY)
+                elseif zoneName == "Bottom" then
+                    lbl.Center = true
+                    local rowY = math.floor(boxY + boxH + barPad + (idx - 1) * lineStep + 0.5)
+                    lbl.Position = Vector2.new(centerX, rowY)
+                elseif zoneName == "Left" then
+                    lbl.Center = false
+                    local rowY = sideStartY + (idx - 1) * lineStep
+                    local boundsW = lbl.TextBounds.X
+                    lbl.Position = Vector2.new(math.floor(boxX - barPad - 4 - boundsW + 0.5), rowY)
+                elseif zoneName == "Right" then
+                    lbl.Center = false
+                    local rowY = sideStartY + (idx - 1) * lineStep
+                    lbl.Position = Vector2.new(math.floor(boxX + boxW + barPad + 4 + 0.5), rowY)
+                end
+                lbl.Visible = true
+            end
+        end
+    end
 end
 
 -- Unified renderer for Players and Npcs
@@ -2345,21 +2581,11 @@ local function renderActorESP(entry: ActorEntry, cam: Camera, vp: Vector2)
     local d = entry.Draw
     updateOffscreenArrow(d, root.Position, cam, vp, primaryColor, cfg.Arrows)
 
-    local head = model:FindFirstChild("Head") :: BasePart?
-    local topWorld = (head and head.Position or root.Position) + Vector3.new(0, 1.35, 0)
-    local botWorld = root.Position - Vector3.new(0, 3.05, 0)
-    local top2D, topVis = cam:WorldToViewportPoint(topWorld)
-    local bot2D, botVis = cam:WorldToViewportPoint(botWorld)
-
-    if not topVis and not botVis then
+    local hasBox, boxX, boxY, boxW, boxH = computeActorScreenBox(model, root, cam)
+    if not hasBox then
         hideDrawingsTable(d, entry.Highlight, true)
         return
     end
-
-    local boxH = math.max(math.abs(bot2D.Y - top2D.Y), 10)
-    local boxW = math.max(boxH * 0.56, 6)
-    local boxX = top2D.X - boxW * 0.5
-    local boxY = math.min(top2D.Y, bot2D.Y)
 
     updateBoxVisual(d, cfg.Box, boxX, boxY, boxW, boxH, primaryColor)
 
@@ -2367,7 +2593,6 @@ local function renderActorESP(entry: ActorEntry, cam: Camera, vp: Vector2)
     local lineStep = fontSize + 2
     local hpRatio = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
 
-    -- Compute display strings & colors for active actor labels
     local values: { [string]: { Text: string, Color: Color3, Size: number } } = {}
     if cfg.Name then
         local title = (not isAI and entry.Player) and entry.Player.DisplayName or model.Name
@@ -2403,90 +2628,8 @@ local function renderActorESP(entry: ActorEntry, cam: Camera, vp: Vector2)
         end
     end
 
-    -- Hide all pooled labels first; docked loops re-enable placed ones cleanly
-    for _, lbl in pairs(d.Labels) do
-        lbl.Visible = false
-    end
-    d.HpBg.Visible = false
-    d.HpFill.Visible = false
-
     local layout = cfg.Layout or createDefaultActorLayout(isAI)
-    for _, zoneName in ipairs({ "Top", "Bottom", "Left", "Right" }) do
-        local list = layout[zoneName] or {}
-        local hasHpBar = false
-        local textKeys: { string } = {}
-        for _, key in ipairs(list) do
-            if key == "HealthBar" then
-                if cfg.HealthBar then
-                    hasHpBar = true
-                end
-            elseif values[key] and d.Labels[key] then
-                table.insert(textKeys, key)
-            end
-        end
-
-        if hasHpBar then
-            if zoneName == "Left" or zoneName == "Right" then
-                local barW = 3
-                local barX = (zoneName == "Left") and (boxX - 6) or (boxX + boxW + 3)
-                local fillH = math.max(boxH * hpRatio, 1)
-                d.HpBg.Position = Vector2.new(barX - 1, boxY - 1)
-                d.HpBg.Size = Vector2.new(barW + 2, boxH + 2)
-                d.HpBg.Visible = true
-                d.HpFill.Position = Vector2.new(barX, boxY + (boxH - fillH))
-                d.HpFill.Size = Vector2.new(barW, fillH)
-                d.HpFill.Color = computeHealthColor(hpRatio)
-                d.HpFill.Visible = true
-            else
-                local barH = 3
-                local barY = (zoneName == "Top") and (boxY - 6) or (boxY + boxH + 3)
-                local fillW = math.max(boxW * hpRatio, 1)
-                d.HpBg.Position = Vector2.new(boxX - 1, barY - 1)
-                d.HpBg.Size = Vector2.new(boxW + 2, barH + 2)
-                d.HpBg.Visible = true
-                d.HpFill.Position = Vector2.new(boxX, barY)
-                d.HpFill.Size = Vector2.new(fillW, barH)
-                d.HpFill.Color = computeHealthColor(hpRatio)
-                d.HpFill.Visible = true
-            end
-        end
-
-        local n = #textKeys
-        if n > 0 then
-            local barPad = hasHpBar and 7 or 2
-            local centerX = boxX + boxW * 0.5
-            local totalTextH = n * lineStep
-            local sideStartY = boxY + math.max((boxH - totalTextH) * 0.5, 0)
-
-            for idx, key in ipairs(textKeys) do
-                local lbl = d.Labels[key]
-                local info = values[key]
-                lbl.Text = info.Text
-                lbl.Color = info.Color
-                lbl.Size = info.Size
-                if zoneName == "Top" then
-                    lbl.Center = true
-                    local bottomOfStack = boxY - barPad - 2
-                    local rowY = bottomOfStack - (n - idx + 1) * lineStep
-                    lbl.Position = Vector2.new(centerX, rowY)
-                elseif zoneName == "Bottom" then
-                    lbl.Center = true
-                    local rowY = boxY + boxH + barPad + (idx - 1) * lineStep
-                    lbl.Position = Vector2.new(centerX, rowY)
-                elseif zoneName == "Left" then
-                    lbl.Center = false
-                    local rowY = sideStartY + (idx - 1) * lineStep
-                    local boundsW = lbl.TextBounds.X
-                    lbl.Position = Vector2.new(boxX - barPad - 4 - boundsW, rowY)
-                elseif zoneName == "Right" then
-                    lbl.Center = false
-                    local rowY = sideStartY + (idx - 1) * lineStep
-                    lbl.Position = Vector2.new(boxX + boxW + barPad + 4, rowY)
-                end
-                lbl.Visible = true
-            end
-        end
-    end
+    renderDockedLabels(d, values, layout, cfg.HealthBar == true, hpRatio, boxX, boxY, boxW, boxH, lineStep)
 
     if cfg.Tracers then
         d.Tracer.From = Vector2.new(vp.X * 0.5, vp.Y)
@@ -2501,6 +2644,13 @@ local function renderActorESP(entry: ActorEntry, cam: Camera, vp: Vector2)
 end
 
 -- Unified renderer for Corpse, Container, Dropped Item, Quest Item, and Extractions
+local TAG_CATEGORY_TO_KEY: { [string]: string } = {
+    Corpse = "Corpse",
+    Container = "Container",
+    Dropped = "Dropped Item",
+    Quest = "Quest Items",
+}
+
 local function renderTagESP(tag: TagEntry, cam: Camera, vp: Vector2)
     if not tag.Instance.Parent or not tag.Root.Parent then
         hideDrawingsTable(tag.Draw, tag.Highlight)
@@ -2549,7 +2699,7 @@ local function renderTagESP(tag: TagEntry, cam: Camera, vp: Vector2)
         return
     end
 
-    -- Highlights / Chams
+    -- Chams Highlights
     if tag.Category ~= "Exit" then
         updateHighlightChams(tag, tag.Instance, color, cfg.ChamsOutline or Color3.new(1, 1, 1), cfg.Chams == true)
     end
@@ -2557,91 +2707,92 @@ local function renderTagESP(tag: TagEntry, cam: Camera, vp: Vector2)
     local d = tag.Draw
     updateOffscreenArrow(d, tag.Root.Position, cam, vp, color, cfg.Arrows == true)
 
-    local sp, onScreen = cam:WorldToViewportPoint(tag.Root.Position + Vector3.new(0, 0.5, 0))
+    local sp, onScreen = cam:WorldToViewportPoint(tag.Root.Position + Vector3.new(0, 0.35, 0))
     if not onScreen then
-        for k, v in pairs(d) do
-            if k ~= "Arrow" and k ~= "ArrowOutline" then
-                if k == "Corners" or k == "Bones" then
-                    for _, line in ipairs(v) do if line then line.Visible = false end end
-                elseif v then
-                    v.Visible = false
-                end
-            end
-        end
+        hideDrawingsTable(d, tag.Highlight, true)
         return
     end
 
     local boxMode = cfg.Box or "Off"
-    local hasBox, bx, by, bw, bh = false, sp.X - 12, sp.Y - 12, 24, 24
+    local hasBox, bx, by, bw, bh = false, sp.X - 7, sp.Y - 7, 14, 14
     if boxMode ~= "Off" then
         hasBox, bx, by, bw, bh = compute3DScreenBox(tag.Instance, tag.Root, cam)
         if hasBox then
             updateBoxVisual(d, boxMode, bx, by, bw, bh, color)
         else
+            bx, by, bw, bh = sp.X - 7, sp.Y - 7, 14, 14
             updateBoxVisual(d, "Off", 0, 0, 0, 0, color)
         end
     else
         updateBoxVisual(d, "Off", 0, 0, 0, 0, color)
     end
 
-    local showDot = (tag.Category == "Exit") or (boxMode == "Off")
-    d.Dot.Position = Vector2.new(sp.X, sp.Y)
+    local showDot = (tag.Category == "Exit") or (boxMode == "Off") or (not hasBox)
+    local dotPos = Vector2.new(math.floor(sp.X + 0.5), math.floor(sp.Y + 0.5))
+    if d.DotOutline then
+        d.DotOutline.Position = dotPos
+        d.DotOutline.Visible = showDot
+    end
+    d.Dot.Position = dotPos
     d.Dot.Color = color
     d.Dot.Visible = showDot
 
     local fs = Config.Settings.FontSize
-    local anchorX = hasBox and (bx + bw * 0.5) or sp.X
-    local labelY = hasBox and (by - fs - 2) or (sp.Y + 6)
+    local lineStep = fs + 1
+    local values: { [string]: { Text: string, Color: Color3, Size: number } } = {}
 
-    local topParts = {}
-    if tag.Category == "Exit" or cfg.Name ~= false then
-        table.insert(topParts, tag.CachedLabel)
-    end
-    if tag.Category == "Exit" or cfg.Distance ~= false then
-        table.insert(topParts, string.format("[%.0fm]", dist))
-    end
-    if #topParts > 0 then
-        d.Label.Text = table.concat(topParts, " ")
-        d.Label.Color = color
-        d.Label.Size = math.max(fs - 1, 11)
-        d.Label.Position = Vector2.new(anchorX, labelY)
-        d.Label.Visible = true
-    else
-        d.Label.Visible = false
-    end
-
-    local subParts = {}
     if tag.Category == "Exit" then
+        values.Name = { Text = tag.CachedLabel, Color = color, Size = math.max(fs - 1, 11) }
+        values.Distance = { Text = string.format("%.0fm", dist), Color = Color3.fromRGB(226, 232, 240), Size = math.max(fs - 2, 10) }
         if tag.CachedSub ~= "" then
-            table.insert(subParts, tag.CachedSub)
+            values.Value = { Text = tag.CachedSub, Color = Color3.fromRGB(167, 243, 208), Size = math.max(fs - 2, 10) }
         end
-    else
-        if cfg.Value and tag.TotalValue > 0 then
-            table.insert(subParts, string.format("$%d", tag.TotalValue))
-        elseif cfg.Value and tag.CachedSub ~= "" then
-            table.insert(subParts, tag.CachedSub)
+        renderDockedLabels(d, values, createDefaultTagLayout("Quest Items"), false, 1, bx, by, bw, bh, lineStep)
+        -- Show Exit subtitle right below Distance cleanly
+        if values.Value and d.Labels.Value then
+            d.Labels.Value.Text = values.Value.Text
+            d.Labels.Value.Color = values.Value.Color
+            d.Labels.Value.Size = values.Value.Size
+            d.Labels.Value.Center = true
+            d.Labels.Value.Position = Vector2.new(math.floor(sp.X + 0.5), math.floor(by + bh + 3 + lineStep + 0.5))
+            d.Labels.Value.Visible = true
         end
-        if tag.Category == "Container" and cfg.Respawn then
-            local respText = Delta.GetContainerRespawnText(tag.Instance)
-            if respText then
-                table.insert(subParts, respText)
-            end
-        end
+        d.Tracer.Visible = false
+        updateSkeletonVisual(d, tag.Instance, cam, color, false)
+        return
     end
 
-    if #subParts > 0 then
-        d.Sub.Text = table.concat(subParts, " | ")
-        d.Sub.Color = Color3.fromRGB(203, 213, 225)
-        d.Sub.Size = math.max(fs - 2, 10)
-        d.Sub.Position = Vector2.new(anchorX, hasBox and (by + bh + 2) or (sp.Y + 6 + fs))
-        d.Sub.Visible = true
-    else
-        d.Sub.Visible = false
+    if cfg.Name then
+        values.Name = { Text = tag.CachedLabel, Color = color, Size = math.max(fs - 1, 11) }
+    end
+    if cfg.Distance then
+        values.Distance = { Text = string.format("%.0fm", dist), Color = Color3.fromRGB(226, 232, 240), Size = math.max(fs - 2, 10) }
+    end
+    if cfg.Value then
+        if tag.TotalValue > 0 then
+            local valCol = tag.IsValuable and Color3.fromRGB(250, 204, 21) or Color3.fromRGB(74, 222, 128)
+            values.Value = { Text = formatCompactMoney(tag.TotalValue), Color = valCol, Size = math.max(fs - 2, 10) }
+        elseif tag.CachedSub ~= "" then
+            values.Value = { Text = tag.CachedSub, Color = Color3.fromRGB(203, 213, 225), Size = math.max(fs - 2, 10) }
+        end
+    end
+    if tag.Category == "Container" and cfg.Respawn then
+        local respText = Delta.GetContainerRespawnText(tag.Instance) or "Ready"
+        local isReady = (respText == "Ready")
+        values.Respawn = {
+            Text = respText,
+            Color = isReady and Color3.fromRGB(52, 211, 153) or Color3.fromRGB(251, 146, 60),
+            Size = math.max(fs - 2, 10),
+        }
     end
 
-    if tag.Category ~= "Exit" and cfg.Tracers then
+    local catKey = TAG_CATEGORY_TO_KEY[tag.Category] or "Dropped Item"
+    local layout = cfg.Layout or createDefaultTagLayout(catKey)
+    renderDockedLabels(d, values, layout, false, 1, bx, by, bw, bh, lineStep)
+
+    if cfg.Tracers then
         d.Tracer.From = Vector2.new(vp.X * 0.5, vp.Y)
-        d.Tracer.To = Vector2.new(anchorX, hasBox and (by + bh) or sp.Y)
+        d.Tracer.To = hasBox and Vector2.new(bx + bw * 0.5, by + bh) or dotPos
         d.Tracer.Color = color
         d.Tracer.Visible = true
     else
@@ -4102,6 +4253,7 @@ do
         end)
         UI.AddSlider(p, "Max Distance", 50, 1000, 25, "m", function() return Config.DroppedESP.MaxDistance end, function(v) Config.DroppedESP.MaxDistance = v end)
         UI.AddColorPicker(p, "Dropped Color", function() return Config.DroppedESP.Color end, function(c) Config.DroppedESP.Color = c end)
+        UI.AddColorPicker(p, "Valuable Color", function() return Config.DroppedESP.ValuableColor end, function(c) Config.DroppedESP.ValuableColor = c end)
     end
 
     -- 6. Quest Items Filters (chams, box, name, distance, tracers, arrows)
@@ -4181,7 +4333,7 @@ do
 end
 
 -- ============================================================================
--- 10B. INTERACTIVE 4-ZONE CHARACTER PREVIEW PANEL (PLAYER & NPC ONLY)
+-- 10B. INTERACTIVE 4-ZONE ESP PREVIEW PANEL (CHARACTER & LOOT CUBE)
 -- ============================================================================
 do
     local PreviewFrame = Instance.new("Frame")
@@ -4220,8 +4372,8 @@ do
     PTitle.Parent = PHeader
 
     local PCatBadge = Instance.new("TextLabel")
-    PCatBadge.Position = UDim2.fromOffset(88, 12)
-    PCatBadge.Size = UDim2.fromOffset(58, 18)
+    PCatBadge.Position = UDim2.fromOffset(82, 12)
+    PCatBadge.Size = UDim2.fromOffset(74, 18)
     PCatBadge.BackgroundColor3 = THEME.BgControl
     PCatBadge.Font = Enum.Font.GothamBold
     PCatBadge.TextSize = 10
@@ -4269,7 +4421,7 @@ do
     HintBar.Parent = PreviewFrame
 
     local STAGE_W, STAGE_H = 262, 416
-    local BOX_X, BOX_Y, BOX_W, BOX_H = 88, 132, 86, 152
+    local curBoxX, curBoxY, curBoxW, curBoxH = 88, 132, 86, 152
 
     local Stage = Instance.new("Frame")
     Stage.Position = UDim2.fromOffset(10, 64)
@@ -4289,10 +4441,10 @@ do
     })
     stageGrad.Parent = Stage
 
-    -- Pedestal plate underneath dummy
+    -- Pedestal plate underneath dummy / cube
     local Pedestal = Instance.new("Frame")
     Pedestal.AnchorPoint = Vector2.new(0.5, 0.5)
-    Pedestal.Position = UDim2.fromOffset(BOX_X + BOX_W * 0.5, BOX_Y + BOX_H - 2)
+    Pedestal.Position = UDim2.fromOffset(curBoxX + curBoxW * 0.5, curBoxY + curBoxH - 2)
     Pedestal.Size = UDim2.fromOffset(112, 22)
     Pedestal.BackgroundColor3 = Color3.fromRGB(22, 29, 43)
     Pedestal.BackgroundTransparency = 0.25
@@ -4301,10 +4453,10 @@ do
     addCorner(Pedestal, 11)
     addStroke(Pedestal, THEME.Border, 1, 0.2)
 
-    -- 3D ViewportFrame character rig in center
+    -- 3D ViewportFrame in center (switches between R15 Character & Isometric Loot Cube)
     local CharViewport = Instance.new("ViewportFrame")
-    CharViewport.Position = UDim2.fromOffset(BOX_X - 18, BOX_Y - 12)
-    CharViewport.Size = UDim2.fromOffset(BOX_W + 36, BOX_H + 22)
+    CharViewport.Position = UDim2.fromOffset(curBoxX - 18, curBoxY - 12)
+    CharViewport.Size = UDim2.fromOffset(curBoxW + 36, curBoxH + 22)
     CharViewport.BackgroundTransparency = 1
     CharViewport.Ambient = Color3.fromRGB(170, 182, 204)
     CharViewport.LightColor = Color3.fromRGB(255, 255, 255)
@@ -4345,10 +4497,42 @@ do
         end
     end
 
-    -- Box & Corner Bracket Overlays around Dummy
+    -- 3D Tactical Loot Cube for Corpse / Container / Dropped Item / Quest Items
+    local CubeParts: { BasePart } = {}
+    do
+        local cubeCF = CFrame.new(0, 0.08, 0) * CFrame.Angles(math.rad(18), math.rad(-32), 0)
+        local cubeSpecs = {
+            { "CubeBody", Vector3.new(2.25, 2.25, 2.25), CFrame.new() },
+            { "CubeLid", Vector3.new(2.38, 0.24, 2.38), CFrame.new(0, 1.04, 0) },
+            { "CubeBand", Vector3.new(2.33, 0.26, 2.33), CFrame.new(0, -0.04, 0) },
+        }
+        for _, spec in ipairs(cubeSpecs) do
+            local p = Instance.new("Part")
+            p.Name = spec[1]
+            p.Size = spec[2]
+            p.CFrame = cubeCF * spec[3]
+            p.Anchored = true
+            p.Material = Enum.Material.SmoothPlastic
+            p.Color = Color3.fromRGB(36, 44, 61)
+            p.Parent = nil
+            table.insert(CubeParts, p)
+        end
+    end
+
+    -- Subtle Translucent Fill, Box, Corners, Tracer & Arrow Overlays
+    local BoxFillFrame = Instance.new("Frame")
+    BoxFillFrame.Position = UDim2.fromOffset(curBoxX, curBoxY)
+    BoxFillFrame.Size = UDim2.fromOffset(curBoxW, curBoxH)
+    BoxFillFrame.BackgroundColor3 = THEME.Accent
+    BoxFillFrame.BackgroundTransparency = 0.9
+    BoxFillFrame.BorderSizePixel = 0
+    BoxFillFrame.ZIndex = 5
+    BoxFillFrame.Visible = false
+    BoxFillFrame.Parent = Stage
+
     local BoxOutlineFrame = Instance.new("Frame")
-    BoxOutlineFrame.Position = UDim2.fromOffset(BOX_X, BOX_Y)
-    BoxOutlineFrame.Size = UDim2.fromOffset(BOX_W, BOX_H)
+    BoxOutlineFrame.Position = UDim2.fromOffset(curBoxX, curBoxY)
+    BoxOutlineFrame.Size = UDim2.fromOffset(curBoxW, curBoxH)
     BoxOutlineFrame.BackgroundTransparency = 1
     BoxOutlineFrame.ZIndex = 6
     BoxOutlineFrame.Visible = false
@@ -4356,17 +4540,8 @@ do
     local boxStroke = addStroke(BoxOutlineFrame, THEME.Accent, 1.5, 0)
 
     local CornerFrames: { Frame } = {}
-    local cw, ch = 18, 22
-    local cornerSpecs = {
-        { BOX_X, BOX_Y, cw, 2 }, { BOX_X, BOX_Y, 2, ch },
-        { BOX_X + BOX_W - cw, BOX_Y, cw, 2 }, { BOX_X + BOX_W - 2, BOX_Y, 2, ch },
-        { BOX_X, BOX_Y + BOX_H - 2, cw, 2 }, { BOX_X, BOX_Y + BOX_H - ch, 2, ch },
-        { BOX_X + BOX_W - cw, BOX_Y + BOX_H - 2, cw, 2 }, { BOX_X + BOX_W - 2, BOX_Y + BOX_H - ch, 2, ch },
-    }
-    for _, sp in ipairs(cornerSpecs) do
+    for _ = 1, 8 do
         local f = Instance.new("Frame")
-        f.Position = UDim2.fromOffset(sp[1], sp[2])
-        f.Size = UDim2.fromOffset(sp[3], sp[4])
         f.BorderSizePixel = 0
         f.ZIndex = 7
         f.Visible = false
@@ -4374,57 +4549,60 @@ do
         table.insert(CornerFrames, f)
     end
 
-    -- Skeleton Overlay inside Preview Stage
+    local PreviewTracer = Instance.new("Frame")
+    PreviewTracer.AnchorPoint = Vector2.new(0.5, 0.5)
+    PreviewTracer.BorderSizePixel = 0
+    PreviewTracer.BackgroundTransparency = 0.28
+    PreviewTracer.ZIndex = 4
+    PreviewTracer.Visible = false
+    PreviewTracer.Parent = Stage
+
+    local PreviewArrow = Instance.new("TextLabel")
+    PreviewArrow.BackgroundTransparency = 1
+    PreviewArrow.Position = UDim2.fromOffset(STAGE_W - 24, 6)
+    PreviewArrow.Size = UDim2.fromOffset(18, 18)
+    PreviewArrow.Font = Enum.Font.GothamBold
+    PreviewArrow.TextSize = 13
+    PreviewArrow.Text = "^"
+    PreviewArrow.Rotation = 35
+    PreviewArrow.ZIndex = 9
+    PreviewArrow.Visible = false
+    PreviewArrow.Parent = Stage
+
+    -- Normalized Skeleton Overlay inside Preview Stage (scales cleanly to Dummy or Corpse Cube)
+    local SKEL_NORM_SEGS = {
+        { Vector2.new(0.50, 0.14), Vector2.new(0.50, 0.22) },
+        { Vector2.new(0.50, 0.22), Vector2.new(0.50, 0.55) },
+        { Vector2.new(0.50, 0.22), Vector2.new(0.26, 0.26) },
+        { Vector2.new(0.26, 0.26), Vector2.new(0.20, 0.41) },
+        { Vector2.new(0.20, 0.41), Vector2.new(0.19, 0.57) },
+        { Vector2.new(0.50, 0.22), Vector2.new(0.74, 0.26) },
+        { Vector2.new(0.74, 0.26), Vector2.new(0.80, 0.41) },
+        { Vector2.new(0.80, 0.41), Vector2.new(0.81, 0.57) },
+        { Vector2.new(0.50, 0.55), Vector2.new(0.37, 0.58) },
+        { Vector2.new(0.37, 0.58), Vector2.new(0.36, 0.78) },
+        { Vector2.new(0.36, 0.78), Vector2.new(0.35, 0.95) },
+        { Vector2.new(0.50, 0.55), Vector2.new(0.63, 0.58) },
+        { Vector2.new(0.63, 0.58), Vector2.new(0.64, 0.78) },
+        { Vector2.new(0.64, 0.78), Vector2.new(0.65, 0.95) },
+    }
     local SkelLines: { Frame } = {}
-    do
-        local cx = BOX_X + BOX_W * 0.5
-        local joints = {
-            Head = Vector2.new(cx, BOX_Y + 21),
-            Neck = Vector2.new(cx, BOX_Y + 34),
-            TorsoMid = Vector2.new(cx, BOX_Y + 58),
-            Pelvis = Vector2.new(cx, BOX_Y + 84),
-            LShoulder = Vector2.new(cx - 21, BOX_Y + 39),
-            LElbow = Vector2.new(cx - 26, BOX_Y + 62),
-            LHand = Vector2.new(cx - 27, BOX_Y + 86),
-            RShoulder = Vector2.new(cx + 21, BOX_Y + 39),
-            RElbow = Vector2.new(cx + 26, BOX_Y + 62),
-            RHand = Vector2.new(cx + 27, BOX_Y + 86),
-            LHip = Vector2.new(cx - 11, BOX_Y + 88),
-            LKnee = Vector2.new(cx - 12, BOX_Y + 118),
-            LFoot = Vector2.new(cx - 13, BOX_Y + 144),
-            RHip = Vector2.new(cx + 11, BOX_Y + 88),
-            RKnee = Vector2.new(cx + 12, BOX_Y + 118),
-            RFoot = Vector2.new(cx + 13, BOX_Y + 144),
-        }
-        local segs = {
-            { joints.Head, joints.Neck }, { joints.Neck, joints.Pelvis },
-            { joints.Neck, joints.LShoulder }, { joints.LShoulder, joints.LElbow }, { joints.LElbow, joints.LHand },
-            { joints.Neck, joints.RShoulder }, { joints.RShoulder, joints.RElbow }, { joints.RElbow, joints.RHand },
-            { joints.Pelvis, joints.LHip }, { joints.LHip, joints.LKnee }, { joints.LKnee, joints.LFoot },
-            { joints.Pelvis, joints.RHip }, { joints.RHip, joints.RKnee }, { joints.RKnee, joints.RFoot },
-        }
-        for _, seg in ipairs(segs) do
-            local p1, p2 = seg[1], seg[2]
-            local diff = p2 - p1
-            local line = Instance.new("Frame")
-            line.AnchorPoint = Vector2.new(0.5, 0.5)
-            line.Position = UDim2.fromOffset((p1.X + p2.X) * 0.5, (p1.Y + p2.Y) * 0.5)
-            line.Size = UDim2.fromOffset(math.max(diff.Magnitude, 2), 1.6)
-            line.Rotation = math.deg(math.atan2(diff.Y, diff.X))
-            line.BorderSizePixel = 0
-            line.ZIndex = 5
-            line.Visible = false
-            line.Parent = Stage
-            table.insert(SkelLines, line)
-        end
+    for _ = 1, #SKEL_NORM_SEGS do
+        local line = Instance.new("Frame")
+        line.AnchorPoint = Vector2.new(0.5, 0.5)
+        line.BorderSizePixel = 0
+        line.ZIndex = 5
+        line.Visible = false
+        line.Parent = Stage
+        table.insert(SkelLines, line)
     end
 
     -- 4 Exclusive Drop Zones (Top, Bottom, Left, Right)
     local ZONE_BOUNDS: { [string]: { X: number, Y: number, W: number, H: number } } = {
-        Top = { X = 6, Y = 4, W = STAGE_W - 12, H = BOX_Y - 8 },
-        Bottom = { X = 6, Y = BOX_Y + BOX_H + 4, W = STAGE_W - 12, H = STAGE_H - (BOX_Y + BOX_H + 8) },
-        Left = { X = 4, Y = BOX_Y, W = BOX_X - 8, H = BOX_H },
-        Right = { X = BOX_X + BOX_W + 4, Y = BOX_Y, W = STAGE_W - (BOX_X + BOX_W + 8), H = BOX_H },
+        Top = { X = 6, Y = 4, W = STAGE_W - 12, H = curBoxY - 8 },
+        Bottom = { X = 6, Y = curBoxY + curBoxH + 4, W = STAGE_W - 12, H = STAGE_H - (curBoxY + curBoxH + 8) },
+        Left = { X = 4, Y = curBoxY, W = curBoxX - 8, H = curBoxH },
+        Right = { X = curBoxX + curBoxW + 4, Y = curBoxY, W = STAGE_W - (curBoxX + curBoxW + 8), H = curBoxH },
     }
     local ZoneHighlights: { [string]: { Frame: Frame, Stroke: UIStroke, Tag: TextLabel } } = {}
     for _, zName in ipairs({ "Top", "Bottom", "Left", "Right" }) do
@@ -4471,9 +4649,100 @@ do
     local HoverZone: string? = nil
     local HoverIndex = 1
 
-    local function getActivePreviewTarget(): (boolean, any)
-        local isAI = (UI._ActiveEspCategory == "Npc")
-        return isAI, isAI and Config.AIESP or Config.PlayerESP
+    local CATEGORY_PREVIEW_META: { [string]: { Badge: string, IsCube: boolean, GetCfg: () -> any } } = {
+        Player = { Badge = "PLAYER", IsCube = false, GetCfg = function() return Config.PlayerESP end },
+        Npc = { Badge = "NPC", IsCube = false, GetCfg = function() return Config.AIESP end },
+        Corpse = { Badge = "CORPSE", IsCube = true, GetCfg = function() return Config.CorpseESP end },
+        Container = { Badge = "CONTAINER", IsCube = true, GetCfg = function() return Config.ContainerESP end },
+        ["Dropped Item"] = { Badge = "DROPPED", IsCube = true, GetCfg = function() return Config.DroppedESP end },
+        ["Quest Items"] = { Badge = "QUEST", IsCube = true, GetCfg = function() return Config.QuestESP end },
+    }
+
+    local function getActivePreviewTarget(): (string, any, boolean)
+        local catKey = UI._ActiveEspCategory or "Player"
+        local meta = CATEGORY_PREVIEW_META[catKey] or CATEGORY_PREVIEW_META.Player
+        return catKey, meta.GetCfg(), meta.IsCube
+    end
+
+    local function getDefaultLayoutForCategory(catKey: string): { Top: { string }, Bottom: { string }, Left: { string }, Right: { string } }
+        if catKey == "Player" then
+            return createDefaultActorLayout(false)
+        elseif catKey == "Npc" then
+            return createDefaultActorLayout(true)
+        end
+        return createDefaultTagLayout(catKey)
+    end
+
+    local function applyStageGeometry(isCube: boolean)
+        if isCube then
+            curBoxX, curBoxY, curBoxW, curBoxH = 79, 156, 104, 104
+            CharViewport.Position = UDim2.fromOffset(curBoxX - 16, curBoxY - 16)
+            CharViewport.Size = UDim2.fromOffset(curBoxW + 32, curBoxH + 32)
+            Pedestal.Size = UDim2.fromOffset(118, 22)
+        else
+            curBoxX, curBoxY, curBoxW, curBoxH = 88, 132, 86, 152
+            CharViewport.Position = UDim2.fromOffset(curBoxX - 18, curBoxY - 12)
+            CharViewport.Size = UDim2.fromOffset(curBoxW + 36, curBoxH + 22)
+            Pedestal.Size = UDim2.fromOffset(112, 22)
+        end
+        Pedestal.Position = UDim2.fromOffset(curBoxX + curBoxW * 0.5, curBoxY + curBoxH - 2)
+        BoxFillFrame.Position = UDim2.fromOffset(curBoxX, curBoxY)
+        BoxFillFrame.Size = UDim2.fromOffset(curBoxW, curBoxH)
+        BoxOutlineFrame.Position = UDim2.fromOffset(curBoxX, curBoxY)
+        BoxOutlineFrame.Size = UDim2.fromOffset(curBoxW, curBoxH)
+
+        if isCube then
+            for _, p in ipairs(DummyParts) do
+                p.Parent = nil
+            end
+            for _, p in ipairs(CubeParts) do
+                p.Parent = WorldM
+            end
+        else
+            for _, p in ipairs(CubeParts) do
+                p.Parent = nil
+            end
+            for _, p in ipairs(DummyParts) do
+                p.Parent = WorldM
+            end
+        end
+
+        local cw, ch = isCube and 20 or 18, isCube and 20 or 22
+        local cSpecs = {
+            { curBoxX, curBoxY, cw, 2 }, { curBoxX, curBoxY, 2, ch },
+            { curBoxX + curBoxW - cw, curBoxY, cw, 2 }, { curBoxX + curBoxW - 2, curBoxY, 2, ch },
+            { curBoxX, curBoxY + curBoxH - 2, cw, 2 }, { curBoxX, curBoxY + curBoxH - ch, 2, ch },
+            { curBoxX + curBoxW - cw, curBoxY + curBoxH - 2, cw, 2 }, { curBoxX + curBoxW - 2, curBoxY + curBoxH - ch, 2, ch },
+        }
+        for i, sp in ipairs(cSpecs) do
+            local cf = CornerFrames[i]
+            cf.Position = UDim2.fromOffset(sp[1], sp[2])
+            cf.Size = UDim2.fromOffset(sp[3], sp[4])
+        end
+
+        local skPadX = isCube and curBoxW * 0.14 or 0
+        local skPadY = isCube and curBoxH * 0.08 or 0
+        local skX, skY = curBoxX + skPadX, curBoxY + skPadY
+        local skW, skH = curBoxW - skPadX * 2, curBoxH - skPadY * 2
+        for i, seg in ipairs(SKEL_NORM_SEGS) do
+            local p1 = Vector2.new(skX + seg[1].X * skW, skY + seg[1].Y * skH)
+            local p2 = Vector2.new(skX + seg[2].X * skW, skY + seg[2].Y * skH)
+            local diff = p2 - p1
+            local line = SkelLines[i]
+            line.Position = UDim2.fromOffset((p1.X + p2.X) * 0.5, (p1.Y + p2.Y) * 0.5)
+            line.Size = UDim2.fromOffset(math.max(diff.Magnitude, 2), 1.6)
+            line.Rotation = math.deg(math.atan2(diff.Y, diff.X))
+        end
+
+        ZONE_BOUNDS.Top = { X = 6, Y = 4, W = STAGE_W - 12, H = curBoxY - 8 }
+        ZONE_BOUNDS.Bottom = { X = 6, Y = curBoxY + curBoxH + 4, W = STAGE_W - 12, H = STAGE_H - (curBoxY + curBoxH + 8) }
+        ZONE_BOUNDS.Left = { X = 4, Y = curBoxY, W = curBoxX - 8, H = curBoxH }
+        ZONE_BOUNDS.Right = { X = curBoxX + curBoxW + 4, Y = curBoxY, W = STAGE_W - (curBoxX + curBoxW + 8), H = curBoxH }
+        for zName, z in pairs(ZoneHighlights) do
+            local b = ZONE_BOUNDS[zName]
+            z.Frame.Position = UDim2.fromOffset(b.X, b.Y)
+            z.Frame.Size = UDim2.fromOffset(b.W, b.H)
+        end
     end
 
     local PREVIEW_SAMPLES: { [string]: string } = {
@@ -4484,33 +4753,63 @@ do
         KDR = "KDR: 1.35",
         Reports = "Rep: 1",
         Downed = "[DOWNED]",
+        Value = "$8.2k",
+        Respawn = "Ready",
     }
 
-    local function getPreviewItemsEnabled(cfg: any, isAI: boolean): { [string]: { Text: string, Color: Color3 } }
-        local baseColor = isAI and cfg.Color or cfg.EnemyColor
+    local function getPreviewItemsEnabled(cfg: any, catKey: string): { [string]: { Text: string, Color: Color3 } }
         local map: { [string]: { Text: string, Color: Color3 } } = {}
-        if cfg.Name then
-            map.Name = { Text = isAI and "[NPC] Bandit" or "Player", Color = baseColor }
+        if catKey == "Player" or catKey == "Npc" then
+            local isAI = (catKey == "Npc")
+            local baseColor = isAI and cfg.Color or cfg.EnemyColor
+            if cfg.Name then
+                map.Name = { Text = isAI and "[NPC] Bandit" or "Player", Color = baseColor }
+            end
+            if cfg.HealthText then
+                map.Health = { Text = "100 HP", Color = THEME.Success }
+            end
+            if cfg.Distance then
+                map.Distance = { Text = "249m", Color = Color3.fromRGB(226, 232, 240) }
+            end
+            if cfg.Weapon then
+                map.Weapon = { Text = "AK74", Color = Color3.fromRGB(203, 213, 225) }
+            end
+            if not isAI then
+                if cfg.KDR then
+                    map.KDR = { Text = "KDR: 1.35", Color = Color3.fromRGB(148, 163, 184) }
+                end
+                if cfg.Reports then
+                    map.Reports = { Text = "Rep: 1", Color = Config.PlayerESP.DownedColor }
+                end
+                if cfg.DownedBadge then
+                    map.Downed = { Text = "[DOWNED]", Color = Config.PlayerESP.DownedColor }
+                end
+            end
+            return map
         end
-        if cfg.HealthText then
-            map.Health = { Text = "100 HP", Color = THEME.Success }
+
+        local tagColor = cfg.Color or THEME.Accent
+        if cfg.Name then
+            local sampleName = (catKey == "Corpse" and "Corpse (Jake)")
+                or (catKey == "Container" and "Military Crate")
+                or (catKey == "Dropped Item" and "M4A1 Carbine")
+                or "Flight Recorder"
+            map.Name = { Text = sampleName, Color = tagColor }
         end
         if cfg.Distance then
-            map.Distance = { Text = "249m", Color = Color3.fromRGB(226, 232, 240) }
+            local distStr = (catKey == "Corpse" and "142m")
+                or (catKey == "Container" and "84m")
+                or (catKey == "Dropped Item" and "36m")
+                or "195m"
+            map.Distance = { Text = distStr, Color = Color3.fromRGB(226, 232, 240) }
         end
-        if cfg.Weapon then
-            map.Weapon = { Text = "AK74", Color = Color3.fromRGB(203, 213, 225) }
+        if cfg.Value and (catKey == "Corpse" or catKey == "Container" or catKey == "Dropped Item") then
+            local valStr = (catKey == "Corpse" and "$14.5k") or (catKey == "Container" and "$8.2k") or "$6.5k"
+            local valCol = (catKey == "Corpse") and Color3.fromRGB(74, 222, 128) or Color3.fromRGB(250, 204, 21)
+            map.Value = { Text = valStr, Color = valCol }
         end
-        if not isAI then
-            if cfg.KDR then
-                map.KDR = { Text = "KDR: 1.35", Color = Color3.fromRGB(148, 163, 184) }
-            end
-            if cfg.Reports then
-                map.Reports = { Text = "Rep: 1", Color = Config.PlayerESP.DownedColor }
-            end
-            if cfg.DownedBadge then
-                map.Downed = { Text = "[DOWNED]", Color = Config.PlayerESP.DownedColor }
-            end
+        if catKey == "Container" and cfg.Respawn then
+            map.Respawn = { Text = "Ready", Color = Color3.fromRGB(52, 211, 153) }
         end
         return map
     end
@@ -4529,11 +4828,11 @@ do
 
     local function resolveZoneFromPoint(stagePos: Vector2): (string, number, number)
         local zone: string
-        if stagePos.Y < BOX_Y then
+        if stagePos.Y < curBoxY then
             zone = "Top"
-        elseif stagePos.Y > BOX_Y + BOX_H then
+        elseif stagePos.Y > curBoxY + curBoxH then
             zone = "Bottom"
-        elseif stagePos.X < BOX_X + BOX_W * 0.5 then
+        elseif stagePos.X < curBoxX + curBoxW * 0.5 then
             zone = "Left"
         else
             zone = "Right"
@@ -4580,19 +4879,32 @@ do
         table.clear(DynamicItems)
         SlotMeta = { Top = {}, Bottom = {}, Left = {}, Right = {} }
 
-        local isAI, cfg = getActivePreviewTarget()
-        PCatBadge.Text = isAI and "NPC" or "PLAYER"
+        local catKey, cfg, isCube = getActivePreviewTarget()
+        local meta = CATEGORY_PREVIEW_META[catKey] or CATEGORY_PREVIEW_META.Player
+        PCatBadge.Text = meta.Badge
+        applyStageGeometry(isCube)
 
-        local primaryCol = isAI and cfg.Color or cfg.EnemyColor
+        local primaryCol = isCube and cfg.Color or (catKey == "Npc" and cfg.Color or cfg.EnemyColor)
+        local chamsOn = isCube and (cfg.Chams == true) or (cfg.Highlights == true)
         local chamsCol = cfg.ChamsFill or primaryCol
 
-        -- Dummy appearance (Highlights vs Default)
-        for _, part in ipairs(DummyParts) do
-            part.Color = cfg.Highlights and chamsCol or Color3.fromRGB(36, 44, 61)
+        -- Dummy / Cube appearance (Chams / Highlights vs Default)
+        if isCube then
+            local lidCol = chamsOn and chamsCol:Lerp(Color3.new(1, 1, 1), 0.14) or Color3.fromRGB(48, 59, 80)
+            local bandCol = chamsOn and (cfg.ChamsOutline or Color3.new(1, 1, 1)) or primaryCol:Lerp(Color3.fromRGB(48, 59, 80), 0.45)
+            if CubeParts[1] then CubeParts[1].Color = chamsOn and chamsCol or Color3.fromRGB(36, 44, 61) end
+            if CubeParts[2] then CubeParts[2].Color = lidCol end
+            if CubeParts[3] then CubeParts[3].Color = bandCol end
+        else
+            for _, part in ipairs(DummyParts) do
+                part.Color = chamsOn and chamsCol or Color3.fromRGB(36, 44, 61)
+            end
         end
-        CharViewport.ImageColor3 = cfg.Highlights and chamsCol or Color3.new(1, 1, 1)
+        CharViewport.ImageColor3 = chamsOn and chamsCol or Color3.new(1, 1, 1)
 
-        -- Box & Corners
+        -- Fill, Box & Corners
+        BoxFillFrame.Visible = (cfg.Box == "2D" or cfg.Box == "Corner")
+        BoxFillFrame.BackgroundColor3 = primaryCol
         BoxOutlineFrame.Visible = (cfg.Box == "2D")
         boxStroke.Color = primaryCol
         for _, cf in ipairs(CornerFrames) do
@@ -4600,14 +4912,31 @@ do
             cf.BackgroundColor3 = primaryCol
         end
 
-        -- Skeleton lines
+        -- Skeleton overlay (Player, Npc, Corpse)
+        local showSkel = (cfg.Skeleton == true) and (not isCube or catKey == "Corpse")
         for _, sk in ipairs(SkelLines) do
-            sk.Visible = (cfg.Skeleton == true)
+            sk.Visible = showSkel
             sk.BackgroundColor3 = primaryCol
         end
 
-        local activeValues = getPreviewItemsEnabled(cfg, isAI)
-        local layout = cfg.Layout or createDefaultActorLayout(isAI)
+        -- Tracer & Arrow visual indicator inside Preview Stage
+        if cfg.Tracers == true then
+            local trStart = Vector2.new(STAGE_W * 0.5, STAGE_H - 4)
+            local trEnd = Vector2.new(curBoxX + curBoxW * 0.5, curBoxY + curBoxH)
+            local diff = trEnd - trStart
+            PreviewTracer.Position = UDim2.fromOffset((trStart.X + trEnd.X) * 0.5, (trStart.Y + trEnd.Y) * 0.5)
+            PreviewTracer.Size = UDim2.fromOffset(math.max(diff.Magnitude, 2), 1.5)
+            PreviewTracer.Rotation = math.deg(math.atan2(diff.Y, diff.X))
+            PreviewTracer.BackgroundColor3 = primaryCol
+            PreviewTracer.Visible = true
+        else
+            PreviewTracer.Visible = false
+        end
+        PreviewArrow.Visible = (cfg.Arrows == true)
+        PreviewArrow.TextColor3 = primaryCol
+
+        local activeValues = getPreviewItemsEnabled(cfg, catKey)
+        local layout = cfg.Layout or getDefaultLayoutForCategory(catKey)
         local lineStep = 15
 
         local function bindDraggable(widget: GuiButton, key: string)
@@ -4644,7 +4973,7 @@ do
             local textKeys: { string } = {}
             for _, key in ipairs(list) do
                 if key == "HealthBar" then
-                    if cfg.HealthBar then
+                    if not isCube and cfg.HealthBar then
                         hasHpBar = true
                     end
                 elseif activeValues[key] then
@@ -4675,23 +5004,23 @@ do
                 addCorner(fill, 2)
 
                 if zoneName == "Left" or zoneName == "Right" then
-                    local grabX = (zoneName == "Left") and (BOX_X - 12) or (BOX_X + BOX_W)
-                    barBtn.Position = UDim2.fromOffset(grabX, BOX_Y)
-                    barBtn.Size = UDim2.fromOffset(13, BOX_H)
+                    local grabX = (zoneName == "Left") and (curBoxX - 12) or (curBoxX + curBoxW)
+                    barBtn.Position = UDim2.fromOffset(grabX, curBoxY)
+                    barBtn.Size = UDim2.fromOffset(13, curBoxH)
                     barBg.Position = UDim2.fromOffset(4, 0)
-                    barBg.Size = UDim2.fromOffset(5, BOX_H)
-                    fill.Position = UDim2.fromOffset(1, math.floor(BOX_H * 0.16))
-                    fill.Size = UDim2.fromOffset(3, math.floor(BOX_H * 0.84) - 1)
-                    table.insert(SlotMeta[zoneName], { Key = "HealthBar", CenterY = BOX_Y + BOX_H * 0.5 })
+                    barBg.Size = UDim2.fromOffset(5, curBoxH)
+                    fill.Position = UDim2.fromOffset(1, math.floor(curBoxH * 0.16))
+                    fill.Size = UDim2.fromOffset(3, math.floor(curBoxH * 0.84) - 1)
+                    table.insert(SlotMeta[zoneName], { Key = "HealthBar", CenterY = curBoxY + curBoxH * 0.5 })
                 else
-                    local grabY = (zoneName == "Top") and (BOX_Y - 12) or (BOX_Y + BOX_H - 1)
+                    local grabY = (zoneName == "Top") and (curBoxY - 12) or (curBoxY + curBoxH - 1)
                     local grabH = (zoneName == "Top") and 13 or 11
-                    barBtn.Position = UDim2.fromOffset(BOX_X, grabY)
-                    barBtn.Size = UDim2.fromOffset(BOX_W, grabH)
+                    barBtn.Position = UDim2.fromOffset(curBoxX, grabY)
+                    barBtn.Size = UDim2.fromOffset(curBoxW, grabH)
                     barBg.Position = UDim2.fromOffset(0, 4)
-                    barBg.Size = UDim2.fromOffset(BOX_W, 5)
+                    barBg.Size = UDim2.fromOffset(curBoxW, 5)
                     fill.Position = UDim2.fromOffset(1, 1)
-                    fill.Size = UDim2.fromOffset(math.floor(BOX_W * 0.84), 3)
+                    fill.Size = UDim2.fromOffset(math.floor(curBoxW * 0.84), 3)
                     table.insert(SlotMeta[zoneName], { Key = "HealthBar", CenterY = grabY + 6 })
                 end
                 bindDraggable(barBtn, "HealthBar")
@@ -4702,7 +5031,7 @@ do
             if n > 0 then
                 local barPad = hasHpBar and 10 or 3
                 local totalTextH = n * lineStep
-                local sideStartY = BOX_Y + math.max((BOX_H - totalTextH) * 0.5, 2)
+                local sideStartY = curBoxY + math.max((curBoxH - totalTextH) * 0.5, 2)
 
                 for idx, key in ipairs(textKeys) do
                     local info = activeValues[key]
@@ -4720,27 +5049,27 @@ do
 
                     local yPos = 0
                     if zoneName == "Top" then
-                        pill.Size = UDim2.fromOffset(110, lineStep - 1)
+                        pill.Size = UDim2.fromOffset(118, lineStep - 1)
                         pill.TextXAlignment = Enum.TextXAlignment.Center
-                        yPos = (BOX_Y - barPad - 2) - (n - idx + 1) * lineStep
-                        pill.Position = UDim2.fromOffset(BOX_X + BOX_W * 0.5 - 55, yPos)
+                        yPos = (curBoxY - barPad - 2) - (n - idx + 1) * lineStep
+                        pill.Position = UDim2.fromOffset(curBoxX + curBoxW * 0.5 - 59, yPos)
                     elseif zoneName == "Bottom" then
-                        pill.Size = UDim2.fromOffset(110, lineStep - 1)
+                        pill.Size = UDim2.fromOffset(118, lineStep - 1)
                         pill.TextXAlignment = Enum.TextXAlignment.Center
-                        yPos = BOX_Y + BOX_H + barPad + (idx - 1) * lineStep
-                        pill.Position = UDim2.fromOffset(BOX_X + BOX_W * 0.5 - 55, yPos)
+                        yPos = curBoxY + curBoxH + barPad + (idx - 1) * lineStep
+                        pill.Position = UDim2.fromOffset(curBoxX + curBoxW * 0.5 - 59, yPos)
                     elseif zoneName == "Left" then
-                        local w = math.max(BOX_X - barPad - 8, 54)
+                        local w = math.max(curBoxX - barPad - 8, 54)
                         pill.Size = UDim2.fromOffset(w, lineStep - 1)
                         pill.TextXAlignment = Enum.TextXAlignment.Right
                         yPos = sideStartY + (idx - 1) * lineStep
-                        pill.Position = UDim2.fromOffset(BOX_X - barPad - w - 3, yPos)
+                        pill.Position = UDim2.fromOffset(curBoxX - barPad - w - 3, yPos)
                     elseif zoneName == "Right" then
-                        local w = math.max(STAGE_W - (BOX_X + BOX_W + barPad + 6), 54)
+                        local w = math.max(STAGE_W - (curBoxX + curBoxW + barPad + 6), 54)
                         pill.Size = UDim2.fromOffset(w, lineStep - 1)
                         pill.TextXAlignment = Enum.TextXAlignment.Left
                         yPos = sideStartY + (idx - 1) * lineStep
-                        pill.Position = UDim2.fromOffset(BOX_X + BOX_W + barPad + 3, yPos)
+                        pill.Position = UDim2.fromOffset(curBoxX + curBoxW + barPad + 3, yPos)
                     end
 
                     table.insert(SlotMeta[zoneName], { Key = key, CenterY = yPos + lineStep * 0.5 })
@@ -4753,8 +5082,8 @@ do
 
     function UI.Preview.SyncVisibility()
         local isVisuals = (CurrentTab == VisualsTab)
-        local isActorCat = (UI._ActiveEspCategory == "Player" or UI._ActiveEspCategory == "Npc")
-        local show = MainWindow.Visible and isVisuals and isActorCat
+        local hasMeta = (UI._ActiveEspCategory ~= nil and CATEGORY_PREVIEW_META[UI._ActiveEspCategory] ~= nil)
+        local show = MainWindow.Visible and isVisuals and hasMeta
         PreviewFrame.Visible = show
         if show then
             repositionPreview()
@@ -4773,10 +5102,11 @@ do
     end)
 
     Session.Bind(ResetBtn.MouseButton1Click, function()
-        local isAI, cfg = getActivePreviewTarget()
-        cfg.Layout = createDefaultActorLayout(isAI)
+        local catKey, cfg = getActivePreviewTarget()
+        local meta = CATEGORY_PREVIEW_META[catKey]
+        cfg.Layout = getDefaultLayoutForCategory(catKey)
         UI.Preview.Refresh()
-        UI.Notify("Preview Layout Reset", (isAI and "NPC" or "Player") .. " ESP layout restored.", "info")
+        UI.Notify("Preview Layout Reset", (meta and meta.Badge or catKey) .. " ESP layout restored.", "info")
     end)
 
     Session.Bind(UserInputService.InputChanged, function(input: InputObject)

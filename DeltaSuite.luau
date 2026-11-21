@@ -206,16 +206,19 @@ local function createDefaultConfig()
         },
         PlayerESP = {
             Enabled = true,
+            Highlights = false,
             Box = "Corner", -- Off | 2D | Corner
             Name = true,
             HealthBar = true,
             HealthText = true,
             Distance = true,
+            KDR = true,
+            Reports = true,
             Weapon = true,
             DownedBadge = true,
-            Skeleton = false,
             Tracers = false,
-            Chams = false,
+            Arrows = false,
+            Skeleton = false,
             TeamCheck = false,
             MaxDistance = 1000,
             EnemyColor = Color3.fromRGB(239, 68, 68),
@@ -226,27 +229,83 @@ local function createDefaultConfig()
         },
         AIESP = {
             Enabled = true,
+            Highlights = false,
+            Box = "Corner", -- Off | 2D | Corner
             Name = true,
             HealthBar = true,
+            HealthText = true,
             Distance = true,
             Weapon = true,
-            Box = "Corner",
+            Tracers = false,
+            Arrows = false,
+            Skeleton = false,
+            MaxDistance = 750,
             Color = Color3.fromRGB(251, 146, 60),
             BossColor = Color3.fromRGB(244, 63, 94),
-            MaxDistance = 750,
+            ChamsFill = Color3.fromRGB(251, 146, 60),
+            ChamsOutline = Color3.fromRGB(255, 255, 255),
         },
-        LootESP = {
-            Containers = false,
-            Corpses = true,
+        CorpseESP = {
+            Enabled = true,
+            Chams = false,
+            Box = "Off", -- Off | 2D | Corner
+            Name = true,
+            Distance = true,
+            Value = true,
+            Tracers = false,
+            Arrows = false,
+            Skeleton = false,
+            HideEmpty = true,
+            MinPrice = 1500,
+            MaxDistance = 600,
+            Color = Color3.fromRGB(192, 132, 252),
+            ChamsOutline = Color3.fromRGB(255, 255, 255),
+        },
+        ContainerESP = {
+            Enabled = false,
+            Chams = false,
+            Box = "Off", -- Off | 2D | Corner
+            Name = true,
+            Distance = true,
+            Value = true,
+            Respawn = true,
+            Tracers = false,
+            Arrows = false,
             HideEmpty = true,
             ValuableOnly = false,
             MinPrice = 1500,
-            DroppedItems = false,
-            ContainerColor = Color3.fromRGB(96, 165, 250),
-            CorpseColor = Color3.fromRGB(192, 132, 252),
-            ValuableColor = Color3.fromRGB(250, 204, 21),
-            DroppedColor = Color3.fromRGB(45, 212, 191),
             MaxDistance = 450,
+            Color = Color3.fromRGB(96, 165, 250),
+            ValuableColor = Color3.fromRGB(250, 204, 21),
+            ChamsOutline = Color3.fromRGB(255, 255, 255),
+        },
+        DroppedESP = {
+            Enabled = false,
+            Chams = false,
+            Box = "Off", -- Off | 2D | Corner
+            Name = true,
+            Distance = true,
+            Value = true,
+            Tracers = false,
+            Arrows = false,
+            ValuableOnly = false,
+            MinPrice = 1500,
+            MaxDistance = 450,
+            Color = Color3.fromRGB(45, 212, 191),
+            ValuableColor = Color3.fromRGB(250, 204, 21),
+            ChamsOutline = Color3.fromRGB(255, 255, 255),
+        },
+        QuestESP = {
+            Enabled = true,
+            Chams = true,
+            Box = "Corner", -- Off | 2D | Corner
+            Name = true,
+            Distance = true,
+            Tracers = false,
+            Arrows = false,
+            MaxDistance = 1200,
+            Color = Color3.fromRGB(250, 204, 21),
+            ChamsOutline = Color3.fromRGB(255, 255, 255),
         },
         ExitESP = {
             Enabled = true,
@@ -452,6 +511,104 @@ function Delta.IsTeammate(player: Player): boolean
         if ok and ally == true then
             return true
         end
+    end
+    return false
+end
+
+local PlayerMetaCache: { [Player]: { KDR: string?, Reports: number?, UpdatedAt: number } } = {}
+
+local function readNumericStat(sources: { Instance? }, keys: { string }): number?
+    for _, src in ipairs(sources) do
+        if src then
+            for _, key in ipairs(keys) do
+                local attr = src:GetAttribute(key)
+                if type(attr) == "number" then
+                    return attr
+                end
+                local ch = src:FindFirstChild(key)
+                if ch and (ch:IsA("NumberValue") or ch:IsA("IntValue")) then
+                    return (ch :: any).Value
+                end
+            end
+        end
+    end
+    return nil
+end
+
+function Delta.GetPlayerMeta(player: Player): (string?, number?)
+    local cached = PlayerMetaCache[player]
+    local now = os.clock()
+    if cached and (now - cached.UpdatedAt) < 2.0 then
+        return cached.KDR, cached.Reports
+    end
+
+    local rsPlayer = Delta.GetRSPlayer(player)
+    local status = rsPlayer and rsPlayer:FindFirstChild("Status")
+    local statsF = (rsPlayer and (rsPlayer:FindFirstChild("Stats") or rsPlayer:FindFirstChild("StartUp"))) or nil
+    local leader = player:FindFirstChild("leaderstats")
+    local sources: { Instance? } = { player, leader, rsPlayer, status, statsF }
+
+    local kdrNum = readNumericStat(sources, { "KDR", "KD", "KillDeathRatio" })
+    local kills = readNumericStat(sources, { "Kills", "PlayerKills", "Eliminations" })
+    local deaths = readNumericStat(sources, { "Deaths" })
+
+    local kdrStr: string? = nil
+    if kdrNum ~= nil then
+        kdrStr = string.format("%.2f", kdrNum)
+    elseif kills ~= nil then
+        local d = math.max(deaths or 1, 1)
+        kdrStr = string.format("%.2f", kills / d)
+    end
+
+    local reports = readNumericStat(sources, { "Reports", "ReportCount", "TotalReports" })
+    local reportList = ReplicatedStorage:FindFirstChild("ReportList")
+    if not reports and reportList then
+        local entry = reportList:FindFirstChild(player.Name) or reportList:FindFirstChild(tostring(player.UserId))
+        if entry then
+            reports = readNumericStat({ entry }, { "Reports", "Count", "Value" }) or #entry:GetChildren()
+        end
+    end
+
+    PlayerMetaCache[player] = { KDR = kdrStr, Reports = reports, UpdatedAt = now }
+    return kdrStr, reports
+end
+
+function Delta.GetContainerRespawnText(inst: Instance): string?
+    local props = inst:FindFirstChild("Properties")
+    local sources: { Instance? } = { inst, props }
+    local nextTime = readNumericStat(sources, { "NextRespawn", "RespawnAt", "RespawnTimestamp" })
+    if nextTime and nextTime > 0 then
+        local rem = nextTime - Workspace:GetServerTimeNow()
+        if rem > 0 and rem < 86400 then
+            return string.format("Respawn: %.0fs", rem)
+        end
+    end
+    local timerVal = readNumericStat(sources, { "RespawnTime", "RespawnTimer", "TimeToRespawn", "Cooldown", "Respawn" })
+    if timerVal and timerVal > 0 then
+        return string.format("Respawn: %.0fs", timerVal)
+    end
+    for _, src in ipairs(sources) do
+        if src then
+            local opened = src:GetAttribute("Opened")
+            if opened == true then
+                return "Looted"
+            end
+        end
+    end
+    return nil
+end
+
+function Delta.IsQuestObject(inst: Instance): boolean
+    if inst:GetAttribute("Quest") ~= nil or inst:GetAttribute("QuestItem") == true or inst:GetAttribute("IsQuestItem") == true then
+        return true
+    end
+    local info = ItemsPriceCache[inst.Name]
+    if info and info.Type:lower():find("quest") then
+        return true
+    end
+    local ln = inst.Name:lower()
+    if ln:find("quest") or ln:find("objective") then
+        return true
     end
     return false
 end
@@ -692,11 +849,15 @@ type ActorEntry = {
 type TagEntry = {
     Root: BasePart,
     Instance: Instance,
-    Category: "Container" | "Corpse" | "Dropped" | "Exit",
+    Category: "Container" | "Corpse" | "Dropped" | "Quest" | "Exit",
     CachedLabel: string,
     CachedSub: string,
+    TopItem: string,
+    ItemCount: number,
     MaxPrice: number,
+    TotalValue: number,
     IsValuable: boolean,
+    Highlight: Highlight?,
     Draw: { [string]: any },
 }
 
@@ -750,37 +911,54 @@ local function refreshContainerTag(tag: TagEntry)
     local lowerName = tag.Instance.Name:lower()
     local dispAttr = tag.Instance:GetAttribute("DisplayName")
     local label = type(dispAttr) == "string" and dispAttr ~= "" and dispAttr or tag.Instance.Name
-    local isCorpse = lowerName:find("corpse") ~= nil
+    local isCorpse = tag.Category == "Corpse"
+        or lowerName:find("corpse") ~= nil
         or lowerName:find("body") ~= nil
         or lowerName:find("dead") ~= nil
+        or lowerName:find("ragdoll") ~= nil
         or tostring(label):lower():find("corpse") ~= nil
+        or (tag.Instance:FindFirstChildOfClass("Humanoid") ~= nil)
     tag.Category = isCorpse and "Corpse" or "Container"
 
     local inv = tag.Instance:FindFirstChild("Inventory")
     local count = 0
     local maxPrice = 0
+    local totalValue = 0
     local topItemName = ""
     if inv then
         for _, item in ipairs(inv:GetChildren()) do
             count += 1
             local info = ItemsPriceCache[item.Name]
-            local price = (info and info.Price) or tonumber(item:GetAttribute("Price")) or 0
-            if price > maxPrice then
-                maxPrice = price
+            local props = item:FindFirstChild("ItemProperties")
+            local unitPrice = (info and info.Price)
+                or tonumber(item:GetAttribute("Price"))
+                or (props and tonumber(props:GetAttribute("Price")))
+                or 0
+            local amount = tonumber(item:GetAttribute("Amount"))
+                or (props and tonumber(props:GetAttribute("Amount")))
+                or 1
+            if unitPrice == 0 and info and (info.Type == "Key" or info.Type == "Keycard") then
+                unitPrice = 5000
+            end
+            totalValue += unitPrice * math.max(amount, 1)
+            if unitPrice > maxPrice then
+                maxPrice = unitPrice
                 topItemName = (info and info.Name) or item.Name
-            elseif info and (info.Type == "Key" or info.Type == "Keycard") and maxPrice < 5000 then
-                maxPrice = 5000
-                topItemName = info.Name
             end
         end
     end
+
+    local minThresh = isCorpse and Config.CorpseESP.MinPrice or Config.ContainerESP.MinPrice
     tag.CachedLabel = tostring(label)
+    tag.ItemCount = count
     tag.MaxPrice = maxPrice
-    tag.IsValuable = maxPrice >= Config.LootESP.MinPrice
+    tag.TotalValue = totalValue
+    tag.TopItem = topItemName
+    tag.IsValuable = maxPrice >= minThresh or totalValue >= minThresh
     tag.CachedSub = count == 0 and "Empty" or (topItemName ~= "" and string.format("%s (%d)", topItemName, count) or string.format("%d items", count))
 end
 
-local function registerWorldTag(inst: Instance, category: "Container" | "Corpse" | "Dropped" | "Exit")
+local function registerWorldTag(inst: Instance, category: "Container" | "Corpse" | "Dropped" | "Quest" | "Exit")
     if WorldTags[inst] then
         return
     end
@@ -789,18 +967,27 @@ local function registerWorldTag(inst: Instance, category: "Container" | "Corpse"
         return
     end
 
+    local resolvedCategory = category
+    if category == "Dropped" and Delta.IsQuestObject(inst) then
+        resolvedCategory = "Quest"
+    end
+
     local tag: TagEntry = {
         Root = root,
         Instance = inst,
-        Category = category,
+        Category = resolvedCategory,
         CachedLabel = inst.Name,
         CachedSub = "",
+        TopItem = "",
+        ItemCount = 0,
         MaxPrice = 0,
+        TotalValue = 0,
         IsValuable = false,
+        Highlight = nil,
         Draw = CreateTagDrawings(),
     }
 
-    if category == "Container" then
+    if resolvedCategory == "Container" or resolvedCategory == "Corpse" then
         refreshContainerTag(tag)
         local inv = inst:FindFirstChild("Inventory")
         if inv then
@@ -811,12 +998,16 @@ local function registerWorldTag(inst: Instance, category: "Container" | "Corpse"
                 refreshContainerTag(tag)
             end)
         end
-    elseif category == "Dropped" then
+    elseif resolvedCategory == "Dropped" or resolvedCategory == "Quest" then
         local info = ItemsPriceCache[inst.Name]
-        tag.CachedLabel = info and info.Name or inst.Name
-        tag.MaxPrice = info and info.Price or 0
-        tag.IsValuable = tag.MaxPrice >= Config.LootESP.MinPrice
-    elseif category == "Exit" then
+        local props = inst:FindFirstChild("ItemProperties")
+        local price = (info and info.Price) or tonumber(inst:GetAttribute("Price")) or (props and tonumber(props:GetAttribute("Price"))) or 0
+        tag.CachedLabel = info and info.Name or tostring(inst:GetAttribute("DisplayName") or inst.Name)
+        tag.MaxPrice = price
+        tag.TotalValue = price
+        tag.ItemCount = 1
+        tag.IsValuable = price >= Config.DroppedESP.MinPrice
+    elseif resolvedCategory == "Exit" then
         local desc = inst:GetAttribute("TeleportDescription") or inst:GetAttribute("TeleportToMap") or inst.Name
         local exitTime = tonumber(inst:GetAttribute("ExitTime"))
         tag.CachedLabel = tostring(desc)
@@ -1642,91 +1833,6 @@ local BONE_PAIRS = {
     { "RightLowerLeg", "RightFoot" },
 }
 
-CreateActorDrawings = function()
-    local d: { [string]: any } = {
-        BoxOutline = newDraw("Square", { Thickness = 3, Filled = false, Color = Color3.new(0, 0, 0), Visible = false }),
-        Box = newDraw("Square", { Thickness = 1.5, Filled = false, Visible = false }),
-        Corners = {},
-        HpBg = newDraw("Square", { Thickness = 1, Filled = true, Color = Color3.new(0, 0, 0), Visible = false }),
-        HpFill = newDraw("Square", { Thickness = 1, Filled = true, Visible = false }),
-        Name = newDraw("Text", { Center = true, Outline = true, Size = 13, Font = 2, Visible = false }),
-        Sub = newDraw("Text", { Center = true, Outline = true, Size = 12, Font = 2, Visible = false }),
-        Badge = newDraw("Text", { Center = true, Outline = true, Size = 12, Font = 2, Visible = false }),
-        Tracer = newDraw("Line", { Thickness = 1.3, Visible = false }),
-        Bones = {},
-    }
-    for i = 1, 8 do
-        d.Corners[i] = newDraw("Line", { Thickness = 1.6, Visible = false })
-    end
-    for i = 1, #BONE_PAIRS do
-        d.Bones[i] = newDraw("Line", { Thickness = 1.2, Visible = false })
-    end
-    return d
-end
-
-local function hideActorDrawings(entry: ActorEntry)
-    local d = entry.Draw
-    for k, v in pairs(d) do
-        if k == "Corners" or k == "Bones" then
-            for _, line in ipairs(v) do
-                if line then
-                    line.Visible = false
-                end
-            end
-        elseif v then
-            v.Visible = false
-        end
-    end
-    if entry.Highlight then
-        entry.Highlight.Enabled = false
-    end
-end
-
-DestroyActorVisuals = function(entry: ActorEntry)
-    local d = entry.Draw
-    for k, v in pairs(d) do
-        if k == "Corners" or k == "Bones" then
-            for _, line in ipairs(v) do
-                if line then
-                    pcall(function() line:Remove() end)
-                end
-            end
-        elseif v then
-            pcall(function() v:Remove() end)
-        end
-    end
-    if entry.Highlight then
-        pcall(function()
-            entry.Highlight:Destroy()
-        end)
-        entry.Highlight = nil
-    end
-end
-
-CreateTagDrawings = function()
-    return {
-        Label = newDraw("Text", { Center = true, Outline = true, Size = 13, Font = 2, Visible = false }),
-        Sub = newDraw("Text", { Center = true, Outline = true, Size = 11, Font = 2, Visible = false }),
-        Dot = newDraw("Circle", { Filled = true, Radius = 3.5, NumSides = 12, Visible = false }),
-    }
-end
-
-DestroyTagVisuals = function(entry: TagEntry)
-    for _, v in pairs(entry.Draw) do
-        if v then
-            pcall(function() v:Remove() end)
-        end
-    end
-end
-
-local function hideTagDrawings(entry: TagEntry)
-    for _, v in pairs(entry.Draw) do
-        if v then
-            v.Visible = false
-        end
-    end
-end
-
 local function setCornerBox(lines: { any }, x: number, y: number, w: number, h: number, color: Color3)
     local lenX = math.max(w * 0.28, 4)
     local lenY = math.max(h * 0.22, 4)
@@ -1751,6 +1857,164 @@ local function setCornerBox(lines: { any }, x: number, y: number, w: number, h: 
     end
 end
 
+local function updateBoxVisual(d: { [string]: any }, boxMode: string, x: number, y: number, w: number, h: number, color: Color3)
+    if boxMode == "2D" then
+        d.BoxOutline.Size = Vector2.new(w, h)
+        d.BoxOutline.Position = Vector2.new(x, y)
+        d.BoxOutline.Visible = true
+        d.Box.Size = Vector2.new(w, h)
+        d.Box.Position = Vector2.new(x, y)
+        d.Box.Color = color
+        d.Box.Visible = true
+        for i = 1, 8 do
+            d.Corners[i].Visible = false
+        end
+    elseif boxMode == "Corner" then
+        d.BoxOutline.Visible = false
+        d.Box.Visible = false
+        setCornerBox(d.Corners, x, y, w, h, color)
+    else
+        d.BoxOutline.Visible = false
+        d.Box.Visible = false
+        for i = 1, 8 do
+            d.Corners[i].Visible = false
+        end
+    end
+end
+
+local function updateSkeletonVisual(d: { [string]: any }, model: Instance, cam: Camera, color: Color3, enabled: boolean)
+    if enabled and model:IsA("Model") then
+        for i, pair in ipairs(BONE_PAIRS) do
+            local line = d.Bones[i]
+            local p1 = model:FindFirstChild(pair[1])
+            local p2 = model:FindFirstChild(pair[2])
+            if line and p1 and p1:IsA("BasePart") and p2 and p2:IsA("BasePart") then
+                local v1, ok1 = cam:WorldToViewportPoint(p1.Position)
+                local v2, ok2 = cam:WorldToViewportPoint(p2.Position)
+                if ok1 and ok2 then
+                    line.From = Vector2.new(v1.X, v1.Y)
+                    line.To = Vector2.new(v2.X, v2.Y)
+                    line.Color = color
+                    line.Visible = true
+                else
+                    line.Visible = false
+                end
+            elseif line then
+                line.Visible = false
+            end
+        end
+    else
+        for i = 1, #BONE_PAIRS do
+            if d.Bones[i] then
+                d.Bones[i].Visible = false
+            end
+        end
+    end
+end
+
+local function updateOffscreenArrow(d: { [string]: any }, worldPos: Vector3, cam: Camera, vp: Vector2, color: Color3, showArrow: boolean)
+    if not showArrow or not d.Arrow then
+        if d.Arrow then d.Arrow.Visible = false end
+        if d.ArrowOutline then d.ArrowOutline.Visible = false end
+        return
+    end
+
+    local sp, onScreen = cam:WorldToViewportPoint(worldPos)
+    local inBounds = onScreen and sp.X >= 10 and sp.X <= vp.X - 10 and sp.Y >= 10 and sp.Y <= vp.Y - 10
+    if inBounds then
+        d.Arrow.Visible = false
+        if d.ArrowOutline then d.ArrowOutline.Visible = false end
+        return
+    end
+
+    local localVec = cam.CFrame:PointToObjectSpace(worldPos)
+    local flat = Vector2.new(localVec.X, -localVec.Y)
+    if flat.Magnitude < 0.001 then
+        flat = Vector2.new(0, -1)
+    end
+    local dir = flat.Unit
+    local perp = Vector2.new(-dir.Y, dir.X)
+
+    local center = Vector2.new(vp.X * 0.5, vp.Y * 0.5)
+    local radius = math.min(vp.X, vp.Y) * 0.37
+    local tip = center + dir * radius
+    local tailCenter = tip - dir * 15
+    local pB = tailCenter + perp * 7.5
+    local pC = tailCenter - perp * 7.5
+
+    if d.ArrowOutline then
+        local outTail = tip - dir * 16.5
+        d.ArrowOutline.PointA = tip + dir * 2
+        d.ArrowOutline.PointB = outTail + perp * 9
+        d.ArrowOutline.PointC = outTail - perp * 9
+        d.ArrowOutline.Visible = true
+    end
+    d.Arrow.PointA = tip
+    d.Arrow.PointB = pB
+    d.Arrow.PointC = pC
+    d.Arrow.Color = color
+    d.Arrow.Visible = true
+end
+
+local function updateHighlightChams(holder: { Highlight: Highlight? }, target: Instance, fillColor: Color3, outlineColor: Color3, enabled: boolean)
+    if enabled and target.Parent then
+        if not holder.Highlight or holder.Highlight.Parent ~= target then
+            if holder.Highlight then
+                pcall(function() holder.Highlight:Destroy() end)
+            end
+            local hl = Instance.new("Highlight")
+            hl.Name = "__DeltaChams"
+            hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+            hl.FillTransparency = 0.52
+            hl.OutlineTransparency = 0.08
+            hl.Parent = target
+            Session.Track(hl)
+            holder.Highlight = hl
+        end
+        holder.Highlight.FillColor = fillColor
+        holder.Highlight.OutlineColor = outlineColor
+        holder.Highlight.Enabled = true
+    elseif holder.Highlight then
+        holder.Highlight.Enabled = false
+    end
+end
+
+local function compute3DScreenBox(inst: Instance, fallbackRoot: BasePart, cam: Camera): (boolean, number, number, number, number)
+    local cf: CFrame, sz: Vector3
+    if inst:IsA("Model") then
+        cf, sz = inst:GetBoundingBox()
+    else
+        cf, sz = fallbackRoot.CFrame, fallbackRoot.Size
+    end
+    local hx, hy, hz = math.max(sz.X * 0.5, 0.35), math.max(sz.Y * 0.5, 0.35), math.max(sz.Z * 0.5, 0.35)
+    local minX, minY = math.huge, math.huge
+    local maxX, maxY = -math.huge, -math.huge
+    local anyVis = false
+
+    for sx = -1, 1, 2 do
+        for sy = -1, 1, 2 do
+            for szSign = -1, 1, 2 do
+                local corner = (cf * CFrame.new(hx * sx, hy * sy, hz * szSign)).Position
+                local vpPt, onScr = cam:WorldToViewportPoint(corner)
+                if onScr then
+                    anyVis = true
+                end
+                if vpPt.Z > 0 then
+                    minX = math.min(minX, vpPt.X)
+                    minY = math.min(minY, vpPt.Y)
+                    maxX = math.max(maxX, vpPt.X)
+                    maxY = math.max(maxY, vpPt.Y)
+                end
+            end
+        end
+    end
+
+    if not anyVis or maxX <= minX or maxY <= minY then
+        return false, 0, 0, 0, 0
+    end
+    return true, minX, minY, math.clamp(maxX - minX, 8, 900), math.clamp(maxY - minY, 8, 900)
+end
+
 local function computeHealthColor(ratio: number): Color3
     local r = math.clamp(ratio, 0, 1)
     if r > 0.5 then
@@ -1759,58 +2023,127 @@ local function computeHealthColor(ratio: number): Color3
     return Color3.fromRGB(239, 68 + 157 * (r * 2), 68)
 end
 
--- Unified renderer for Players and AI
+CreateActorDrawings = function()
+    local d: { [string]: any } = {
+        BoxOutline = newDraw("Square", { Thickness = 3, Filled = false, Color = Color3.new(0, 0, 0), Visible = false }),
+        Box = newDraw("Square", { Thickness = 1.5, Filled = false, Visible = false }),
+        Corners = {},
+        HpBg = newDraw("Square", { Thickness = 1, Filled = true, Color = Color3.new(0, 0, 0), Visible = false }),
+        HpFill = newDraw("Square", { Thickness = 1, Filled = true, Visible = false }),
+        Name = newDraw("Text", { Center = true, Outline = true, Size = 13, Font = 2, Visible = false }),
+        Sub = newDraw("Text", { Center = true, Outline = true, Size = 12, Font = 2, Visible = false }),
+        Badge = newDraw("Text", { Center = true, Outline = true, Size = 12, Font = 2, Visible = false }),
+        Tracer = newDraw("Line", { Thickness = 1.3, Visible = false }),
+        ArrowOutline = newDraw("Triangle", { Filled = true, Color = Color3.new(0, 0, 0), Visible = false }),
+        Arrow = newDraw("Triangle", { Filled = true, Visible = false }),
+        Bones = {},
+    }
+    for i = 1, 8 do
+        d.Corners[i] = newDraw("Line", { Thickness = 1.6, Visible = false })
+    end
+    for i = 1, #BONE_PAIRS do
+        d.Bones[i] = newDraw("Line", { Thickness = 1.2, Visible = false })
+    end
+    return d
+end
+
+local function hideDrawingsTable(d: { [string]: any }, hl: Highlight?)
+    for k, v in pairs(d) do
+        if k == "Corners" or k == "Bones" then
+            for _, line in ipairs(v) do
+                if line then line.Visible = false end
+            end
+        elseif v then
+            v.Visible = false
+        end
+    end
+    if hl then
+        hl.Enabled = false
+    end
+end
+
+local function destroyVisualEntry(d: { [string]: any }, holder: { Highlight: Highlight? })
+    for k, v in pairs(d) do
+        if k == "Corners" or k == "Bones" then
+            for _, line in ipairs(v) do
+                if line then pcall(function() line:Remove() end) end
+            end
+        elseif v then
+            pcall(function() v:Remove() end)
+        end
+    end
+    if holder.Highlight then
+        pcall(function() holder.Highlight:Destroy() end)
+        holder.Highlight = nil
+    end
+end
+
+DestroyActorVisuals = function(entry: ActorEntry)
+    destroyVisualEntry(entry.Draw, entry)
+end
+
+CreateTagDrawings = function()
+    local d: { [string]: any } = {
+        BoxOutline = newDraw("Square", { Thickness = 3, Filled = false, Color = Color3.new(0, 0, 0), Visible = false }),
+        Box = newDraw("Square", { Thickness = 1.5, Filled = false, Visible = false }),
+        Corners = {},
+        Label = newDraw("Text", { Center = true, Outline = true, Size = 13, Font = 2, Visible = false }),
+        Sub = newDraw("Text", { Center = true, Outline = true, Size = 11, Font = 2, Visible = false }),
+        Dot = newDraw("Circle", { Filled = true, Radius = 3.2, NumSides = 12, Visible = false }),
+        Tracer = newDraw("Line", { Thickness = 1.2, Visible = false }),
+        ArrowOutline = newDraw("Triangle", { Filled = true, Color = Color3.new(0, 0, 0), Visible = false }),
+        Arrow = newDraw("Triangle", { Filled = true, Visible = false }),
+        Bones = {},
+    }
+    for i = 1, 8 do
+        d.Corners[i] = newDraw("Line", { Thickness = 1.5, Visible = false })
+    end
+    for i = 1, #BONE_PAIRS do
+        d.Bones[i] = newDraw("Line", { Thickness = 1.1, Visible = false })
+    end
+    return d
+end
+
+DestroyTagVisuals = function(entry: TagEntry)
+    destroyVisualEntry(entry.Draw, entry)
+end
+
+-- Unified renderer for Players and Npcs
 local function renderActorESP(entry: ActorEntry, cam: Camera, vp: Vector2)
     local model = entry.Model
     if not model.Parent then
-        hideActorDrawings(entry)
+        hideDrawingsTable(entry.Draw, entry.Highlight)
         return
     end
 
     local isAI = entry.IsAI
-    local cfg = isAI and Config.AIESP or Config.PlayerESP
+    local cfg: any = isAI and Config.AIESP or Config.PlayerESP
     if not cfg.Enabled then
-        hideActorDrawings(entry)
+        hideDrawingsTable(entry.Draw, entry.Highlight)
         return
     end
 
     local isTeam = (not isAI and entry.Player ~= nil) and Delta.IsTeammate(entry.Player :: Player) or false
     if not isAI and Config.PlayerESP.TeamCheck and isTeam then
-        hideActorDrawings(entry)
+        hideDrawingsTable(entry.Draw, entry.Highlight)
         return
     end
 
     local hum = model:FindFirstChildOfClass("Humanoid")
     local root = model:FindFirstChild("HumanoidRootPart") :: BasePart? or model.PrimaryPart
     if not hum or not root or hum.Health <= 0 then
-        hideActorDrawings(entry)
+        hideDrawingsTable(entry.Draw, entry.Highlight)
         return
     end
 
     local camPos = cam.CFrame.Position
     local dist = (root.Position - camPos).Magnitude
     if dist > cfg.MaxDistance then
-        hideActorDrawings(entry)
+        hideDrawingsTable(entry.Draw, entry.Highlight)
         return
     end
 
-    local head = model:FindFirstChild("Head") :: BasePart?
-    local topWorld = (head and head.Position or root.Position) + Vector3.new(0, 1.35, 0)
-    local botWorld = root.Position - Vector3.new(0, 3.05, 0)
-
-    local top2D, topVis = cam:WorldToViewportPoint(topWorld)
-    local bot2D, botVis = cam:WorldToViewportPoint(botWorld)
-    if not topVis and not botVis then
-        hideActorDrawings(entry)
-        return
-    end
-
-    local boxH = math.max(math.abs(bot2D.Y - top2D.Y), 10)
-    local boxW = math.max(boxH * 0.56, 6)
-    local boxX = top2D.X - boxW * 0.5
-    local boxY = math.min(top2D.Y, bot2D.Y)
-
-    -- Pick primary color semantically
+    -- Semantic color selection
     local isDowned = (not isAI and entry.Player ~= nil) and Delta.IsPlayerDowned(entry.Player :: Player, model) or false
     local primaryColor: Color3
     if isAI then
@@ -1825,30 +2158,38 @@ local function renderActorESP(entry: ActorEntry, cam: Camera, vp: Vector2)
         primaryColor = Config.PlayerESP.EnemyColor
     end
 
+    -- Highlight (Chams) works even when offscreen
+    updateHighlightChams(entry, model, isTeam and Config.PlayerESP.SquadColor or cfg.ChamsFill, cfg.ChamsOutline, cfg.Highlights)
+
+    -- Offscreen Arrow
     local d = entry.Draw
-    local boxMode = cfg.Box
-    if boxMode == "2D" then
-        d.BoxOutline.Size = Vector2.new(boxW, boxH)
-        d.BoxOutline.Position = Vector2.new(boxX, boxY)
-        d.BoxOutline.Visible = true
-        d.Box.Size = Vector2.new(boxW, boxH)
-        d.Box.Position = Vector2.new(boxX, boxY)
-        d.Box.Color = primaryColor
-        d.Box.Visible = true
-        for i = 1, 8 do
-            d.Corners[i].Visible = false
+    updateOffscreenArrow(d, root.Position, cam, vp, primaryColor, cfg.Arrows)
+
+    local head = model:FindFirstChild("Head") :: BasePart?
+    local topWorld = (head and head.Position or root.Position) + Vector3.new(0, 1.35, 0)
+    local botWorld = root.Position - Vector3.new(0, 3.05, 0)
+    local top2D, topVis = cam:WorldToViewportPoint(topWorld)
+    local bot2D, botVis = cam:WorldToViewportPoint(botWorld)
+
+    if not topVis and not botVis then
+        for k, v in pairs(d) do
+            if k ~= "Arrow" and k ~= "ArrowOutline" then
+                if k == "Corners" or k == "Bones" then
+                    for _, line in ipairs(v) do if line then line.Visible = false end end
+                elseif v then
+                    v.Visible = false
+                end
+            end
         end
-    elseif boxMode == "Corner" then
-        d.BoxOutline.Visible = false
-        d.Box.Visible = false
-        setCornerBox(d.Corners, boxX, boxY, boxW, boxH, primaryColor)
-    else
-        d.BoxOutline.Visible = false
-        d.Box.Visible = false
-        for i = 1, 8 do
-            d.Corners[i].Visible = false
-        end
+        return
     end
+
+    local boxH = math.max(math.abs(bot2D.Y - top2D.Y), 10)
+    local boxW = math.max(boxH * 0.56, 6)
+    local boxX = top2D.X - boxW * 0.5
+    local boxY = math.min(top2D.Y, bot2D.Y)
+
+    updateBoxVisual(d, cfg.Box, boxX, boxY, boxW, boxH, primaryColor)
 
     local fontSize = Config.Settings.FontSize
     local hpRatio = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
@@ -1872,7 +2213,7 @@ local function renderActorESP(entry: ActorEntry, cam: Camera, vp: Vector2)
     if cfg.Name then
         local title = (not isAI and entry.Player) and entry.Player.DisplayName or model.Name
         if isAI then
-            title = "[AI] " .. title
+            title = "[NPC] " .. title
         end
         d.Name.Text = title
         d.Name.Color = primaryColor
@@ -1887,7 +2228,7 @@ local function renderActorESP(entry: ActorEntry, cam: Camera, vp: Vector2)
     if cfg.Distance then
         table.insert(subParts, string.format("%.0fm", dist))
     end
-    if not isAI and Config.PlayerESP.HealthText then
+    if cfg.HealthText then
         table.insert(subParts, string.format("%.0f HP", hum.Health))
     end
     if cfg.Weapon then
@@ -1906,17 +2247,32 @@ local function renderActorESP(entry: ActorEntry, cam: Camera, vp: Vector2)
         d.Sub.Visible = false
     end
 
-    if not isAI and Config.PlayerESP.DownedBadge and isDowned then
-        d.Badge.Text = "[DOWNED]"
-        d.Badge.Color = Config.PlayerESP.DownedColor
-        d.Badge.Size = math.max(fontSize - 1, 10)
-        d.Badge.Position = Vector2.new(boxX + boxW * 0.5, boxY + boxH + fontSize + 3)
+    local badgeParts = {}
+    if not isAI and entry.Player then
+        if Config.PlayerESP.DownedBadge and isDowned then
+            table.insert(badgeParts, "[DOWNED]")
+        end
+        if Config.PlayerESP.KDR or Config.PlayerESP.Reports then
+            local kdrStr, repCount = Delta.GetPlayerMeta(entry.Player)
+            if Config.PlayerESP.KDR then
+                table.insert(badgeParts, "KDR: " .. (kdrStr or "N/A"))
+            end
+            if Config.PlayerESP.Reports then
+                table.insert(badgeParts, "Rep: " .. tostring(repCount or 0))
+            end
+        end
+    end
+    if #badgeParts > 0 then
+        d.Badge.Text = table.concat(badgeParts, "  ")
+        d.Badge.Color = isDowned and Config.PlayerESP.DownedColor or Color3.fromRGB(148, 163, 184)
+        d.Badge.Size = math.max(fontSize - 2, 10)
+        d.Badge.Position = Vector2.new(boxX + boxW * 0.5, boxY + boxH + (#subParts > 0 and (fontSize + 3) or 2))
         d.Badge.Visible = true
     else
         d.Badge.Visible = false
     end
 
-    if not isAI and Config.PlayerESP.Tracers then
+    if cfg.Tracers then
         d.Tracer.From = Vector2.new(vp.X * 0.5, vp.Y)
         d.Tracer.To = Vector2.new(boxX + boxW * 0.5, boxY + boxH)
         d.Tracer.Color = primaryColor
@@ -1925,129 +2281,157 @@ local function renderActorESP(entry: ActorEntry, cam: Camera, vp: Vector2)
         d.Tracer.Visible = false
     end
 
-    if not isAI and Config.PlayerESP.Skeleton then
-        for i, pair in ipairs(BONE_PAIRS) do
-            local line = d.Bones[i]
-            local p1 = model:FindFirstChild(pair[1])
-            local p2 = model:FindFirstChild(pair[2])
-            if line and p1 and p1:IsA("BasePart") and p2 and p2:IsA("BasePart") then
-                local v1, ok1 = cam:WorldToViewportPoint(p1.Position)
-                local v2, ok2 = cam:WorldToViewportPoint(p2.Position)
-                if ok1 and ok2 then
-                    line.From = Vector2.new(v1.X, v1.Y)
-                    line.To = Vector2.new(v2.X, v2.Y)
-                    line.Color = primaryColor
-                    line.Visible = true
-                else
-                    line.Visible = false
-                end
-            elseif line then
-                line.Visible = false
-            end
-        end
-    else
-        for i = 1, #BONE_PAIRS do
-            if d.Bones[i] then
-                d.Bones[i].Visible = false
-            end
-        end
-    end
-
-    if not isAI and Config.PlayerESP.Chams then
-        if not entry.Highlight or entry.Highlight.Parent ~= model then
-            if entry.Highlight then
-                pcall(function() entry.Highlight:Destroy() end)
-            end
-            local hl = Instance.new("Highlight")
-            hl.Name = "__DeltaChams"
-            hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-            hl.FillTransparency = 0.55
-            hl.OutlineTransparency = 0.1
-            hl.Parent = model
-            Session.Track(hl)
-            entry.Highlight = hl
-        end
-        entry.Highlight.FillColor = isTeam and Config.PlayerESP.SquadColor or Config.PlayerESP.ChamsFill
-        entry.Highlight.OutlineColor = Config.PlayerESP.ChamsOutline
-        entry.Highlight.Enabled = true
-    elseif entry.Highlight then
-        entry.Highlight.Enabled = false
-    end
+    updateSkeletonVisual(d, model, cam, primaryColor, cfg.Skeleton)
 end
 
-local function renderTagESP(tag: TagEntry, cam: Camera)
+-- Unified renderer for Corpse, Container, Dropped Item, Quest Item, and Extractions
+local function renderTagESP(tag: TagEntry, cam: Camera, vp: Vector2)
     if not tag.Instance.Parent or not tag.Root.Parent then
-        hideTagDrawings(tag)
+        hideDrawingsTable(tag.Draw, tag.Highlight)
         return
     end
 
-    local enabled = false
-    local maxDist = 500
-    local color = Config.LootESP.ContainerColor
-
+    local cfg: any = nil
+    local color = THEME.Accent
     if tag.Category == "Exit" then
-        enabled = Config.ExitESP.Enabled
-        maxDist = Config.ExitESP.MaxDistance
+        cfg = Config.ExitESP
         color = Config.ExitESP.Color
-    elseif tag.Category == "Dropped" then
-        enabled = Config.LootESP.DroppedItems
-        maxDist = Config.LootESP.MaxDistance
-        color = tag.IsValuable and Config.LootESP.ValuableColor or Config.LootESP.DroppedColor
     elseif tag.Category == "Corpse" then
-        enabled = Config.LootESP.Corpses
-        maxDist = Config.LootESP.MaxDistance
-        color = Config.LootESP.CorpseColor
-    else
-        enabled = Config.LootESP.Containers
-        maxDist = Config.LootESP.MaxDistance
-        color = tag.IsValuable and Config.LootESP.ValuableColor or Config.LootESP.ContainerColor
+        cfg = Config.CorpseESP
+        color = Config.CorpseESP.Color
+    elseif tag.Category == "Container" then
+        cfg = Config.ContainerESP
+        color = tag.IsValuable and Config.ContainerESP.ValuableColor or Config.ContainerESP.Color
+    elseif tag.Category == "Dropped" then
+        cfg = Config.DroppedESP
+        color = tag.IsValuable and Config.DroppedESP.ValuableColor or Config.DroppedESP.Color
+    elseif tag.Category == "Quest" then
+        cfg = Config.QuestESP
+        color = Config.QuestESP.Color
     end
 
-    if not enabled then
-        hideTagDrawings(tag)
+    if not cfg or not cfg.Enabled then
+        hideDrawingsTable(tag.Draw, tag.Highlight)
         return
     end
-    if (tag.Category == "Container" or tag.Category == "Corpse") and Config.LootESP.HideEmpty and tag.CachedSub == "Empty" then
-        hideTagDrawings(tag)
+    if (tag.Category == "Container" or tag.Category == "Corpse") and cfg.HideEmpty and tag.ItemCount == 0 then
+        hideDrawingsTable(tag.Draw, tag.Highlight)
         return
     end
-    if (tag.Category == "Container" or tag.Category == "Dropped") and Config.LootESP.ValuableOnly and not tag.IsValuable then
-        hideTagDrawings(tag)
+    if (tag.Category == "Container" or tag.Category == "Dropped") and cfg.ValuableOnly and not tag.IsValuable then
+        hideDrawingsTable(tag.Draw, tag.Highlight)
         return
     end
 
     local dist = (tag.Root.Position - cam.CFrame.Position).Magnitude
-    if dist > maxDist then
-        hideTagDrawings(tag)
+    if dist > cfg.MaxDistance then
+        hideDrawingsTable(tag.Draw, tag.Highlight)
         return
     end
 
-    local sp, onScreen = cam:WorldToViewportPoint(tag.Root.Position + Vector3.new(0, 0.8, 0))
-    if not onScreen then
-        hideTagDrawings(tag)
-        return
+    -- Highlights / Chams
+    if tag.Category ~= "Exit" then
+        updateHighlightChams(tag, tag.Instance, color, cfg.ChamsOutline or Color3.new(1, 1, 1), cfg.Chams == true)
     end
 
     local d = tag.Draw
-    local fs = Config.Settings.FontSize
+    updateOffscreenArrow(d, tag.Root.Position, cam, vp, color, cfg.Arrows == true)
+
+    local sp, onScreen = cam:WorldToViewportPoint(tag.Root.Position + Vector3.new(0, 0.5, 0))
+    if not onScreen then
+        for k, v in pairs(d) do
+            if k ~= "Arrow" and k ~= "ArrowOutline" then
+                if k == "Corners" or k == "Bones" then
+                    for _, line in ipairs(v) do if line then line.Visible = false end end
+                elseif v then
+                    v.Visible = false
+                end
+            end
+        end
+        return
+    end
+
+    local boxMode = cfg.Box or "Off"
+    local hasBox, bx, by, bw, bh = false, sp.X - 12, sp.Y - 12, 24, 24
+    if boxMode ~= "Off" then
+        hasBox, bx, by, bw, bh = compute3DScreenBox(tag.Instance, tag.Root, cam)
+        if hasBox then
+            updateBoxVisual(d, boxMode, bx, by, bw, bh, color)
+        else
+            updateBoxVisual(d, "Off", 0, 0, 0, 0, color)
+        end
+    else
+        updateBoxVisual(d, "Off", 0, 0, 0, 0, color)
+    end
+
+    local showDot = (tag.Category == "Exit") or (boxMode == "Off")
     d.Dot.Position = Vector2.new(sp.X, sp.Y)
     d.Dot.Color = color
-    d.Dot.Visible = true
+    d.Dot.Visible = showDot
 
-    d.Label.Text = string.format("%s [%.0fm]", tag.CachedLabel, dist)
-    d.Label.Color = color
-    d.Label.Size = math.max(fs - 1, 11)
-    d.Label.Position = Vector2.new(sp.X, sp.Y + 6)
-    d.Label.Visible = true
+    local fs = Config.Settings.FontSize
+    local anchorX = hasBox and (bx + bw * 0.5) or sp.X
+    local labelY = hasBox and (by - fs - 2) or (sp.Y + 6)
 
-    if tag.CachedSub ~= "" then
-        d.Sub.Text = tag.CachedSub
+    local topParts = {}
+    if tag.Category == "Exit" or cfg.Name ~= false then
+        table.insert(topParts, tag.CachedLabel)
+    end
+    if tag.Category == "Exit" or cfg.Distance ~= false then
+        table.insert(topParts, string.format("[%.0fm]", dist))
+    end
+    if #topParts > 0 then
+        d.Label.Text = table.concat(topParts, " ")
+        d.Label.Color = color
+        d.Label.Size = math.max(fs - 1, 11)
+        d.Label.Position = Vector2.new(anchorX, labelY)
+        d.Label.Visible = true
+    else
+        d.Label.Visible = false
+    end
+
+    local subParts = {}
+    if tag.Category == "Exit" then
+        if tag.CachedSub ~= "" then
+            table.insert(subParts, tag.CachedSub)
+        end
+    else
+        if cfg.Value and tag.TotalValue > 0 then
+            table.insert(subParts, string.format("$%d", tag.TotalValue))
+        elseif cfg.Value and tag.CachedSub ~= "" then
+            table.insert(subParts, tag.CachedSub)
+        end
+        if tag.Category == "Container" and cfg.Respawn then
+            local respText = Delta.GetContainerRespawnText(tag.Instance)
+            if respText then
+                table.insert(subParts, respText)
+            end
+        end
+    end
+
+    if #subParts > 0 then
+        d.Sub.Text = table.concat(subParts, " | ")
         d.Sub.Color = Color3.fromRGB(203, 213, 225)
         d.Sub.Size = math.max(fs - 2, 10)
-        d.Sub.Position = Vector2.new(sp.X, sp.Y + 6 + fs)
+        d.Sub.Position = Vector2.new(anchorX, hasBox and (by + bh + 2) or (sp.Y + 6 + fs))
         d.Sub.Visible = true
     else
         d.Sub.Visible = false
+    end
+
+    if tag.Category ~= "Exit" and cfg.Tracers then
+        d.Tracer.From = Vector2.new(vp.X * 0.5, vp.Y)
+        d.Tracer.To = Vector2.new(anchorX, hasBox and (by + bh) or sp.Y)
+        d.Tracer.Color = color
+        d.Tracer.Visible = true
+    else
+        d.Tracer.Visible = false
+    end
+
+    if tag.Category == "Corpse" then
+        updateSkeletonVisual(d, tag.Instance, cam, color, cfg.Skeleton == true)
+    else
+        updateSkeletonVisual(d, tag.Instance, cam, color, false)
     end
 end
 
@@ -2078,6 +2462,7 @@ for _, p in ipairs(Players:GetPlayers()) do
 end
 Session.Bind(Players.PlayerAdded, bindPlayerTracking)
 Session.Bind(Players.PlayerRemoving, function(p)
+    PlayerMetaCache[p] = nil
     if p.Character then
         unregisterActor(p.Character)
     end
@@ -2111,7 +2496,7 @@ local function attachAiZonesFolder(folder: Instance)
     Session.Bind(folder.ChildAdded, bindAiZone)
 end
 
-local function bindFolderTags(folder: Instance?, cat: "Container" | "Dropped" | "Exit")
+local function bindFolderTags(folder: Instance?, cat: "Container" | "Corpse" | "Dropped" | "Quest" | "Exit")
     if not folder or BoundFolders[folder] then
         return
     end
@@ -2133,16 +2518,26 @@ local function hookWorkspaceFolder(child: Instance)
         attachAiZonesFolder(child)
     elseif child.Name == "Containers" then
         bindFolderTags(child, "Container")
+    elseif child.Name == "Corpses" or child.Name == "Bodies" or child.Name == "Ragdolls" then
+        bindFolderTags(child, "Corpse")
     elseif child.Name == "DroppedItems" then
         bindFolderTags(child, "Dropped")
+    elseif child.Name == "QuestItems" or child.Name == "Quests" then
+        bindFolderTags(child, "Quest")
     elseif child.Name == "NoCollision" then
         local exits = child:FindFirstChild("ExitLocations")
         if exits then
             bindFolderTags(exits, "Exit")
         end
+        local qf = child:FindFirstChild("QuestItems")
+        if qf then
+            bindFolderTags(qf, "Quest")
+        end
         Session.Bind(child.ChildAdded, function(sub)
             if sub.Name == "ExitLocations" then
                 bindFolderTags(sub, "Exit")
+            elseif sub.Name == "QuestItems" then
+                bindFolderTags(sub, "Quest")
             end
         end)
     end
@@ -3086,6 +3481,121 @@ function UI.AddButton(sec: Frame, label: string, style: ("normal" | "danger")?, 
     Session.Bind(btn.MouseButton1Click, onClick)
 end
 
+-- Crisp sliders icon built cleanly with frames (avoids external image asset failure)
+local function buildSlidersGlyph(parent: Instance): { Frame }
+    local bars: { Frame } = {}
+    local offsets = { { y = 4, kx = 5 }, { y = 9, kx = 12 }, { y = 14, kx = 7 } }
+    for _, cfg in ipairs(offsets) do
+        local line = Instance.new("Frame")
+        line.Position = UDim2.fromOffset(3, cfg.y)
+        line.Size = UDim2.new(1, -6, 0, 2)
+        line.BackgroundColor3 = THEME.TextSecondary
+        line.BorderSizePixel = 0
+        line.Parent = parent
+        addCorner(line, 1)
+        table.insert(bars, line)
+
+        local dot = Instance.new("Frame")
+        dot.AnchorPoint = Vector2.new(0.5, 0.5)
+        dot.Position = UDim2.fromOffset(cfg.kx, cfg.y + 1)
+        dot.Size = UDim2.fromOffset(4, 5)
+        dot.BackgroundColor3 = THEME.TextSecondary
+        dot.BorderSizePixel = 0
+        dot.Parent = parent
+        addCorner(dot, 2)
+        table.insert(bars, dot)
+    end
+    return bars
+end
+
+function UI.AddEspCategoryRow(sec: Frame, label: string, getter: () -> boolean, setter: (boolean) -> (), onFilterClick: () -> (), isSelected: () -> boolean, showDivider: boolean?)
+    local wrap = Instance.new("Frame")
+    wrap.Size = UDim2.new(1, 0, 0, showDivider ~= false and 31 or 27)
+    wrap.BackgroundTransparency = 1
+    wrap.Parent = sec
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -76, 0, 24)
+    lbl.BackgroundTransparency = 1
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextSize = 12
+    lbl.TextColor3 = THEME.TextPrimary
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Text = label
+    lbl.Parent = wrap
+
+    local gearBtn = Instance.new("TextButton")
+    gearBtn.AnchorPoint = Vector2.new(1, 0)
+    gearBtn.Position = UDim2.new(1, -44, 0, 2)
+    gearBtn.Size = UDim2.fromOffset(22, 20)
+    gearBtn.BackgroundColor3 = THEME.BgControl
+    gearBtn.BackgroundTransparency = 1
+    gearBtn.Text = ""
+    gearBtn.AutoButtonColor = false
+    gearBtn.Parent = wrap
+    addCorner(gearBtn, 5)
+    local glyphParts = buildSlidersGlyph(gearBtn)
+
+    local track = Instance.new("TextButton")
+    track.AnchorPoint = Vector2.new(1, 0)
+    track.Position = UDim2.new(1, 0, 0, 2)
+    track.Size = UDim2.fromOffset(38, 20)
+    track.Text = ""
+    track.AutoButtonColor = false
+    track.Parent = wrap
+    addCorner(track, 10)
+
+    local knob = Instance.new("Frame")
+    knob.AnchorPoint = Vector2.new(0, 0.5)
+    knob.Size = UDim2.fromOffset(14, 14)
+    knob.BackgroundColor3 = Color3.new(1, 1, 1)
+    knob.BorderSizePixel = 0
+    knob.Parent = track
+    addCorner(knob, 7)
+
+    if showDivider ~= false then
+        local div = Instance.new("Frame")
+        div.Position = UDim2.new(0, 0, 1, -1)
+        div.Size = UDim2.new(1, 0, 0, 1)
+        div.BackgroundColor3 = THEME.Border
+        div.BackgroundTransparency = 0.45
+        div.BorderSizePixel = 0
+        div.Parent = wrap
+    end
+
+    local function sync(instant: boolean?)
+        local on = getter()
+        local tCol = on and THEME.Accent or THEME.BgControl
+        local kPos = on and UDim2.new(1, -17, 0.5, 0) or UDim2.new(0, 3, 0.5, 0)
+        if instant then
+            track.BackgroundColor3 = tCol
+            knob.Position = kPos
+        else
+            quickTween(track, { BackgroundColor3 = tCol }, 0.14)
+            quickTween(knob, { Position = kPos }, 0.14)
+        end
+        local sel = isSelected()
+        gearBtn.BackgroundTransparency = sel and 0.25 or 1
+        local gCol = sel and THEME.Accent or THEME.TextSecondary
+        for _, p in ipairs(glyphParts) do
+            p.BackgroundColor3 = gCol
+        end
+    end
+    sync(true)
+    table.insert(UI._Refreshers, function()
+        sync(true)
+    end)
+
+    Session.Bind(track.MouseButton1Click, function()
+        setter(not getter())
+        sync(false)
+    end)
+    Session.Bind(gearBtn.MouseButton1Click, function()
+        onFilterClick()
+        UI.RefreshAll()
+    end)
+end
+
 -- ============================================================================
 -- 10. POPULATE TABS (COMBAT, VISUALS, SETTINGS ONLY)
 -- ============================================================================
@@ -3180,53 +3690,186 @@ end
 
 -- ---- VISUALS TAB ----
 do
-    local secPESP = UI.AddSection(VisualsTab, "Left", "Player ESP")
-    UI.AddToggle(secPESP, "Enable Player ESP", function() return Config.PlayerESP.Enabled end, function(v) Config.PlayerESP.Enabled = v end)
-    UI.AddDropdown(secPESP, "Box Style", { "Corner", "2D", "Off" }, function() return Config.PlayerESP.Box end, function(v) Config.PlayerESP.Box = v end)
-    UI.AddToggle(secPESP, "Player Name", function() return Config.PlayerESP.Name end, function(v) Config.PlayerESP.Name = v end)
-    UI.AddToggle(secPESP, "Health Bar", function() return Config.PlayerESP.HealthBar end, function(v) Config.PlayerESP.HealthBar = v end)
-    UI.AddToggle(secPESP, "Health Value", function() return Config.PlayerESP.HealthText end, function(v) Config.PlayerESP.HealthText = v end)
-    UI.AddToggle(secPESP, "Distance", function() return Config.PlayerESP.Distance end, function(v) Config.PlayerESP.Distance = v end)
-    UI.AddToggle(secPESP, "Held Weapon", function() return Config.PlayerESP.Weapon end, function(v) Config.PlayerESP.Weapon = v end)
-    UI.AddToggle(secPESP, "Downed Badge", function() return Config.PlayerESP.DownedBadge end, function(v) Config.PlayerESP.DownedBadge = v end)
-    UI.AddToggle(secPESP, "Skeleton", function() return Config.PlayerESP.Skeleton end, function(v) Config.PlayerESP.Skeleton = v end)
-    UI.AddToggle(secPESP, "Tracers", function() return Config.PlayerESP.Tracers end, function(v) Config.PlayerESP.Tracers = v end)
-    UI.AddToggle(secPESP, "Chams Highlight", function() return Config.PlayerESP.Chams end, function(v) Config.PlayerESP.Chams = v end)
-    UI.AddToggle(secPESP, "Hide Squadmates", function() return Config.PlayerESP.TeamCheck end, function(v) Config.PlayerESP.TeamCheck = v end)
-    UI.AddSlider(secPESP, "Max Distance", 100, 2000, 50, "m", function() return Config.PlayerESP.MaxDistance end, function(v) Config.PlayerESP.MaxDistance = v end)
-    UI.AddColorPicker(secPESP, "Enemy Color", function() return Config.PlayerESP.EnemyColor end, function(c) Config.PlayerESP.EnemyColor = c end)
-    UI.AddColorPicker(secPESP, "Squad Color", function() return Config.PlayerESP.SquadColor end, function(c) Config.PlayerESP.SquadColor = c end)
-    UI.AddColorPicker(secPESP, "Chams Fill Color", function() return Config.PlayerESP.ChamsFill end, function(c) Config.PlayerESP.ChamsFill = c end)
+    local secEsp = UI.AddSection(VisualsTab, "Left", "ESP")
+    local secFilters = UI.AddSection(VisualsTab, "Right", "Filters · Player")
+    local filterTitleLabel = secFilters.Parent and secFilters.Parent:FindFirstChildOfClass("TextLabel")
 
-    local secAIESP = UI.AddSection(VisualsTab, "Right", "AI / Scav / Boss ESP")
-    UI.AddToggle(secAIESP, "Enable AI ESP", function() return Config.AIESP.Enabled end, function(v) Config.AIESP.Enabled = v end)
-    UI.AddDropdown(secAIESP, "AI Box Style", { "Corner", "2D", "Off" }, function() return Config.AIESP.Box end, function(v) Config.AIESP.Box = v end)
-    UI.AddToggle(secAIESP, "AI Name", function() return Config.AIESP.Name end, function(v) Config.AIESP.Name = v end)
-    UI.AddToggle(secAIESP, "AI Health Bar", function() return Config.AIESP.HealthBar end, function(v) Config.AIESP.HealthBar = v end)
-    UI.AddToggle(secAIESP, "AI Distance", function() return Config.AIESP.Distance end, function(v) Config.AIESP.Distance = v end)
-    UI.AddToggle(secAIESP, "AI Held Weapon", function() return Config.AIESP.Weapon end, function(v) Config.AIESP.Weapon = v end)
-    UI.AddSlider(secAIESP, "AI Max Distance", 100, 1500, 50, "m", function() return Config.AIESP.MaxDistance end, function(v) Config.AIESP.MaxDistance = v end)
-    UI.AddColorPicker(secAIESP, "AI Color", function() return Config.AIESP.Color end, function(c) Config.AIESP.Color = c end)
+    local activeCategory = "Player"
+    local filterFrames: { [string]: Frame } = {}
 
-    local secLoot = UI.AddSection(VisualsTab, "Right", "Loot, Corpses & Exits")
-    UI.AddToggle(secLoot, "Containers ESP", function() return Config.LootESP.Containers end, function(v) Config.LootESP.Containers = v end)
-    UI.AddToggle(secLoot, "Corpses ESP", function() return Config.LootESP.Corpses end, function(v) Config.LootESP.Corpses = v end)
-    UI.AddToggle(secLoot, "Dropped Items ESP", function() return Config.LootESP.DroppedItems end, function(v) Config.LootESP.DroppedItems = v end)
-    UI.AddToggle(secLoot, "Hide Empty Containers", function() return Config.LootESP.HideEmpty end, function(v) Config.LootESP.HideEmpty = v end)
-    UI.AddToggle(secLoot, "Valuable Only Filter", function() return Config.LootESP.ValuableOnly end, function(v) Config.LootESP.ValuableOnly = v end)
-    UI.AddSlider(secLoot, "Valuable Price Min", 500, 15000, 250, "$", function() return Config.LootESP.MinPrice end, function(v)
-        Config.LootESP.MinPrice = v
-        for _, tag in pairs(WorldTags) do
-            if tag.Category == "Container" or tag.Category == "Corpse" then
-                refreshContainerTag(tag)
-            elseif tag.Category == "Dropped" then
-                tag.IsValuable = tag.MaxPrice >= v
-            end
+    local function selectCategory(cat: string)
+        activeCategory = cat
+        if filterTitleLabel then
+            filterTitleLabel.Text = ("Filters · " .. cat):upper()
         end
-    end)
-    UI.AddSlider(secLoot, "Loot Max Distance", 50, 1000, 25, "m", function() return Config.LootESP.MaxDistance end, function(v) Config.LootESP.MaxDistance = v end)
-    UI.AddToggle(secLoot, "Extraction Locations ESP", function() return Config.ExitESP.Enabled end, function(v) Config.ExitESP.Enabled = v end)
-    UI.AddColorPicker(secLoot, "Extraction Color", function() return Config.ExitESP.Color end, function(c) Config.ExitESP.Color = c end)
+        for name, fr in pairs(filterFrames) do
+            fr.Visible = (name == cat)
+        end
+    end
+
+    local function makeFilterPage(cat: string): Frame
+        local page = Instance.new("Frame")
+        page.Size = UDim2.new(1, 0, 0, 0)
+        page.AutomaticSize = Enum.AutomaticSize.Y
+        page.BackgroundTransparency = 1
+        page.Visible = (cat == activeCategory)
+        page.Parent = secFilters
+        local ly = Instance.new("UIListLayout")
+        ly.Padding = UDim.new(0, 7)
+        ly.Parent = page
+        filterFrames[cat] = page
+        return page
+    end
+
+    local categories: { { Key: string, Label: string, Get: () -> boolean, Set: (boolean) -> () } } = {
+        { Key = "Player", Label = "Player", Get = function() return Config.PlayerESP.Enabled end, Set = function(v) Config.PlayerESP.Enabled = v end },
+        { Key = "Npc", Label = "Npc", Get = function() return Config.AIESP.Enabled end, Set = function(v) Config.AIESP.Enabled = v end },
+        { Key = "Corpse", Label = "Corpse", Get = function() return Config.CorpseESP.Enabled end, Set = function(v) Config.CorpseESP.Enabled = v end },
+        { Key = "Container", Label = "Container", Get = function() return Config.ContainerESP.Enabled end, Set = function(v) Config.ContainerESP.Enabled = v end },
+        { Key = "Dropped Item", Label = "Dropped Item", Get = function() return Config.DroppedESP.Enabled end, Set = function(v) Config.DroppedESP.Enabled = v end },
+        { Key = "Quest Items", Label = "Quest Items", Get = function() return Config.QuestESP.Enabled end, Set = function(v) Config.QuestESP.Enabled = v end },
+    }
+
+    for i, cat in ipairs(categories) do
+        UI.AddEspCategoryRow(
+            secEsp,
+            cat.Label,
+            cat.Get,
+            cat.Set,
+            function()
+                selectCategory(cat.Key)
+            end,
+            function()
+                return activeCategory == cat.Key
+            end,
+            i < #categories
+        )
+    end
+
+    -- 1. Player Filters (highlights, box, name, healthbar, health, distance, kdr, reports, tracers, arrows, skeleton)
+    do
+        local p = makeFilterPage("Player")
+        UI.AddToggle(p, "Highlights", function() return Config.PlayerESP.Highlights end, function(v) Config.PlayerESP.Highlights = v end)
+        UI.AddDropdown(p, "Box", { "Corner", "2D", "Off" }, function() return Config.PlayerESP.Box end, function(v) Config.PlayerESP.Box = v end)
+        UI.AddToggle(p, "Name", function() return Config.PlayerESP.Name end, function(v) Config.PlayerESP.Name = v end)
+        UI.AddToggle(p, "HealthBar", function() return Config.PlayerESP.HealthBar end, function(v) Config.PlayerESP.HealthBar = v end)
+        UI.AddToggle(p, "Health", function() return Config.PlayerESP.HealthText end, function(v) Config.PlayerESP.HealthText = v end)
+        UI.AddToggle(p, "Distance", function() return Config.PlayerESP.Distance end, function(v) Config.PlayerESP.Distance = v end)
+        UI.AddToggle(p, "KDR", function() return Config.PlayerESP.KDR end, function(v) Config.PlayerESP.KDR = v end)
+        UI.AddToggle(p, "Reports", function() return Config.PlayerESP.Reports end, function(v) Config.PlayerESP.Reports = v end)
+        UI.AddToggle(p, "Tracers", function() return Config.PlayerESP.Tracers end, function(v) Config.PlayerESP.Tracers = v end)
+        UI.AddToggle(p, "Arrows", function() return Config.PlayerESP.Arrows end, function(v) Config.PlayerESP.Arrows = v end)
+        UI.AddToggle(p, "Skeleton", function() return Config.PlayerESP.Skeleton end, function(v) Config.PlayerESP.Skeleton = v end)
+        UI.AddToggle(p, "Held Weapon", function() return Config.PlayerESP.Weapon end, function(v) Config.PlayerESP.Weapon = v end)
+        UI.AddToggle(p, "Downed Badge", function() return Config.PlayerESP.DownedBadge end, function(v) Config.PlayerESP.DownedBadge = v end)
+        UI.AddToggle(p, "Hide Squadmates", function() return Config.PlayerESP.TeamCheck end, function(v) Config.PlayerESP.TeamCheck = v end)
+        UI.AddSlider(p, "Max Distance", 100, 2000, 50, "m", function() return Config.PlayerESP.MaxDistance end, function(v) Config.PlayerESP.MaxDistance = v end)
+        UI.AddColorPicker(p, "Enemy Color", function() return Config.PlayerESP.EnemyColor end, function(c) Config.PlayerESP.EnemyColor = c end)
+        UI.AddColorPicker(p, "Squad Color", function() return Config.PlayerESP.SquadColor end, function(c) Config.PlayerESP.SquadColor = c end)
+        UI.AddColorPicker(p, "Highlight Color", function() return Config.PlayerESP.ChamsFill end, function(c) Config.PlayerESP.ChamsFill = c end)
+    end
+
+    -- 2. Npc Filters (highlight, box, name, healthbar, health, distance, tracers, arrows, skeleton)
+    do
+        local p = makeFilterPage("Npc")
+        UI.AddToggle(p, "Highlight", function() return Config.AIESP.Highlights end, function(v) Config.AIESP.Highlights = v end)
+        UI.AddDropdown(p, "Box", { "Corner", "2D", "Off" }, function() return Config.AIESP.Box end, function(v) Config.AIESP.Box = v end)
+        UI.AddToggle(p, "Name", function() return Config.AIESP.Name end, function(v) Config.AIESP.Name = v end)
+        UI.AddToggle(p, "HealthBar", function() return Config.AIESP.HealthBar end, function(v) Config.AIESP.HealthBar = v end)
+        UI.AddToggle(p, "Health", function() return Config.AIESP.HealthText end, function(v) Config.AIESP.HealthText = v end)
+        UI.AddToggle(p, "Distance", function() return Config.AIESP.Distance end, function(v) Config.AIESP.Distance = v end)
+        UI.AddToggle(p, "Tracers", function() return Config.AIESP.Tracers end, function(v) Config.AIESP.Tracers = v end)
+        UI.AddToggle(p, "Arrows", function() return Config.AIESP.Arrows end, function(v) Config.AIESP.Arrows = v end)
+        UI.AddToggle(p, "Skeleton", function() return Config.AIESP.Skeleton end, function(v) Config.AIESP.Skeleton = v end)
+        UI.AddToggle(p, "Held Weapon", function() return Config.AIESP.Weapon end, function(v) Config.AIESP.Weapon = v end)
+        UI.AddSlider(p, "Max Distance", 100, 1500, 50, "m", function() return Config.AIESP.MaxDistance end, function(v) Config.AIESP.MaxDistance = v end)
+        UI.AddColorPicker(p, "NPC Color", function() return Config.AIESP.Color end, function(c) Config.AIESP.Color = c end)
+        UI.AddColorPicker(p, "Boss Color", function() return Config.AIESP.BossColor end, function(c) Config.AIESP.BossColor = c end)
+        UI.AddColorPicker(p, "Highlight Color", function() return Config.AIESP.ChamsFill end, function(c) Config.AIESP.ChamsFill = c end)
+    end
+
+    -- 3. Corpse Filters (chams, box, name, distance, value, tracers, arrows, skeleton)
+    do
+        local p = makeFilterPage("Corpse")
+        UI.AddToggle(p, "Chams", function() return Config.CorpseESP.Chams end, function(v) Config.CorpseESP.Chams = v end)
+        UI.AddDropdown(p, "Box", { "Corner", "2D", "Off" }, function() return Config.CorpseESP.Box end, function(v) Config.CorpseESP.Box = v end)
+        UI.AddToggle(p, "Name", function() return Config.CorpseESP.Name end, function(v) Config.CorpseESP.Name = v end)
+        UI.AddToggle(p, "Distance", function() return Config.CorpseESP.Distance end, function(v) Config.CorpseESP.Distance = v end)
+        UI.AddToggle(p, "Value", function() return Config.CorpseESP.Value end, function(v) Config.CorpseESP.Value = v end)
+        UI.AddToggle(p, "Tracers", function() return Config.CorpseESP.Tracers end, function(v) Config.CorpseESP.Tracers = v end)
+        UI.AddToggle(p, "Arrows", function() return Config.CorpseESP.Arrows end, function(v) Config.CorpseESP.Arrows = v end)
+        UI.AddToggle(p, "Skeleton", function() return Config.CorpseESP.Skeleton end, function(v) Config.CorpseESP.Skeleton = v end)
+        UI.AddToggle(p, "Hide Empty", function() return Config.CorpseESP.HideEmpty end, function(v) Config.CorpseESP.HideEmpty = v end)
+        UI.AddSlider(p, "Max Distance", 50, 1200, 25, "m", function() return Config.CorpseESP.MaxDistance end, function(v) Config.CorpseESP.MaxDistance = v end)
+        UI.AddColorPicker(p, "Corpse Color", function() return Config.CorpseESP.Color end, function(c) Config.CorpseESP.Color = c end)
+    end
+
+    -- 4. Container Filters (chams, box, name, distance, value, respawn, tracers, arrows)
+    do
+        local p = makeFilterPage("Container")
+        UI.AddToggle(p, "Chams", function() return Config.ContainerESP.Chams end, function(v) Config.ContainerESP.Chams = v end)
+        UI.AddDropdown(p, "Box", { "Corner", "2D", "Off" }, function() return Config.ContainerESP.Box end, function(v) Config.ContainerESP.Box = v end)
+        UI.AddToggle(p, "Name", function() return Config.ContainerESP.Name end, function(v) Config.ContainerESP.Name = v end)
+        UI.AddToggle(p, "Distance", function() return Config.ContainerESP.Distance end, function(v) Config.ContainerESP.Distance = v end)
+        UI.AddToggle(p, "Value", function() return Config.ContainerESP.Value end, function(v) Config.ContainerESP.Value = v end)
+        UI.AddToggle(p, "Respawn", function() return Config.ContainerESP.Respawn end, function(v) Config.ContainerESP.Respawn = v end)
+        UI.AddToggle(p, "Tracers", function() return Config.ContainerESP.Tracers end, function(v) Config.ContainerESP.Tracers = v end)
+        UI.AddToggle(p, "Arrows", function() return Config.ContainerESP.Arrows end, function(v) Config.ContainerESP.Arrows = v end)
+        UI.AddToggle(p, "Hide Empty", function() return Config.ContainerESP.HideEmpty end, function(v) Config.ContainerESP.HideEmpty = v end)
+        UI.AddToggle(p, "Valuable Only", function() return Config.ContainerESP.ValuableOnly end, function(v) Config.ContainerESP.ValuableOnly = v end)
+        UI.AddSlider(p, "Min Value", 500, 15000, 250, "$", function() return Config.ContainerESP.MinPrice end, function(v)
+            Config.ContainerESP.MinPrice = v
+            for _, tag in pairs(WorldTags) do
+                if tag.Category == "Container" then
+                    refreshContainerTag(tag)
+                end
+            end
+        end)
+        UI.AddSlider(p, "Max Distance", 50, 1000, 25, "m", function() return Config.ContainerESP.MaxDistance end, function(v) Config.ContainerESP.MaxDistance = v end)
+        UI.AddColorPicker(p, "Container Color", function() return Config.ContainerESP.Color end, function(c) Config.ContainerESP.Color = c end)
+        UI.AddColorPicker(p, "Valuable Color", function() return Config.ContainerESP.ValuableColor end, function(c) Config.ContainerESP.ValuableColor = c end)
+    end
+
+    -- 5. Dropped Item Filters (chams, box, name, distance, value, tracers, arrows)
+    do
+        local p = makeFilterPage("Dropped Item")
+        UI.AddToggle(p, "Chams", function() return Config.DroppedESP.Chams end, function(v) Config.DroppedESP.Chams = v end)
+        UI.AddDropdown(p, "Box", { "Corner", "2D", "Off" }, function() return Config.DroppedESP.Box end, function(v) Config.DroppedESP.Box = v end)
+        UI.AddToggle(p, "Name", function() return Config.DroppedESP.Name end, function(v) Config.DroppedESP.Name = v end)
+        UI.AddToggle(p, "Distance", function() return Config.DroppedESP.Distance end, function(v) Config.DroppedESP.Distance = v end)
+        UI.AddToggle(p, "Value", function() return Config.DroppedESP.Value end, function(v) Config.DroppedESP.Value = v end)
+        UI.AddToggle(p, "Tracers", function() return Config.DroppedESP.Tracers end, function(v) Config.DroppedESP.Tracers = v end)
+        UI.AddToggle(p, "Arrows", function() return Config.DroppedESP.Arrows end, function(v) Config.DroppedESP.Arrows = v end)
+        UI.AddToggle(p, "Valuable Only", function() return Config.DroppedESP.ValuableOnly end, function(v) Config.DroppedESP.ValuableOnly = v end)
+        UI.AddSlider(p, "Min Value", 500, 15000, 250, "$", function() return Config.DroppedESP.MinPrice end, function(v)
+            Config.DroppedESP.MinPrice = v
+            for _, tag in pairs(WorldTags) do
+                if tag.Category == "Dropped" then
+                    tag.IsValuable = tag.MaxPrice >= v
+                end
+            end
+        end)
+        UI.AddSlider(p, "Max Distance", 50, 1000, 25, "m", function() return Config.DroppedESP.MaxDistance end, function(v) Config.DroppedESP.MaxDistance = v end)
+        UI.AddColorPicker(p, "Dropped Color", function() return Config.DroppedESP.Color end, function(c) Config.DroppedESP.Color = c end)
+    end
+
+    -- 6. Quest Items Filters (chams, box, name, distance, tracers, arrows)
+    do
+        local p = makeFilterPage("Quest Items")
+        UI.AddToggle(p, "Chams", function() return Config.QuestESP.Chams end, function(v) Config.QuestESP.Chams = v end)
+        UI.AddDropdown(p, "Box", { "Corner", "2D", "Off" }, function() return Config.QuestESP.Box end, function(v) Config.QuestESP.Box = v end)
+        UI.AddToggle(p, "Name", function() return Config.QuestESP.Name end, function(v) Config.QuestESP.Name = v end)
+        UI.AddToggle(p, "Distance", function() return Config.QuestESP.Distance end, function(v) Config.QuestESP.Distance = v end)
+        UI.AddToggle(p, "Tracers", function() return Config.QuestESP.Tracers end, function(v) Config.QuestESP.Tracers = v end)
+        UI.AddToggle(p, "Arrows", function() return Config.QuestESP.Arrows end, function(v) Config.QuestESP.Arrows = v end)
+        UI.AddSlider(p, "Max Distance", 50, 2000, 50, "m", function() return Config.QuestESP.MaxDistance end, function(v) Config.QuestESP.MaxDistance = v end)
+        UI.AddColorPicker(p, "Quest Color", function() return Config.QuestESP.Color end, function(c) Config.QuestESP.Color = c end)
+    end
+
+    local secExit = UI.AddSection(VisualsTab, "Left", "Extractions")
+    UI.AddToggle(secExit, "Extraction Locations ESP", function() return Config.ExitESP.Enabled end, function(v) Config.ExitESP.Enabled = v end)
+    UI.AddSlider(secExit, "Max Distance", 100, 3000, 50, "m", function() return Config.ExitESP.MaxDistance end, function(v) Config.ExitESP.MaxDistance = v end)
+    UI.AddColorPicker(secExit, "Extraction Color", function() return Config.ExitESP.Color end, function(c) Config.ExitESP.Color = c end)
 
     local secWorld = UI.AddSection(VisualsTab, "Left", "World & Vision")
     UI.AddToggle(secWorld, "Fullbright", function() return Config.World.Fullbright end, function(v) Config.World.Fullbright = v end)
@@ -3389,7 +4032,7 @@ Session.Bind(RunService.RenderStepped, function(dt: number)
         renderActorESP(entry, cam, vp)
     end
     for _, tag in pairs(WorldTags) do
-        renderTagESP(tag, cam)
+        renderTagESP(tag, cam, vp)
     end
 
     -- Target HUD

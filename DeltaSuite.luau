@@ -2223,32 +2223,43 @@ local BONE_PAIRS = {
 }
 
 local function setCornerBox(lines: { any }, outlines: { any }?, x: number, y: number, w: number, h: number, color: Color3)
-    local px, py = math.floor(x + 0.5), math.floor(y + 0.5)
+    local L, T = math.floor(x + 0.5), math.floor(y + 0.5)
     local pw, ph = math.max(math.floor(w + 0.5), 6), math.max(math.floor(h + 0.5), 6)
-    local lenX = math.max(math.floor(pw * 0.28), 4)
-    local lenY = math.max(math.floor(ph * 0.22), 4)
-    local coords = {
-        { Vector2.new(px, py), Vector2.new(px + lenX, py) },
-        { Vector2.new(px, py), Vector2.new(px, py + lenY) },
-        { Vector2.new(px + pw, py), Vector2.new(px + pw - lenX, py) },
-        { Vector2.new(px + pw, py), Vector2.new(px + pw, py + lenY) },
-        { Vector2.new(px, py + ph), Vector2.new(px + lenX, py + ph) },
-        { Vector2.new(px, py + ph), Vector2.new(px, py + ph - lenY) },
-        { Vector2.new(px + pw, py + ph), Vector2.new(px + pw - lenX, py + ph) },
-        { Vector2.new(px + pw, py + ph), Vector2.new(px + pw, py + ph - lenY) },
+    local R, B = L + pw, T + ph
+    local lenX = math.clamp(math.floor(pw * 0.24 + 0.5), 4, 18)
+    local lenY = math.clamp(math.floor(ph * 0.19 + 0.5), 4, 22)
+
+    local fgCoords = {
+        { Vector2.new(L - 0.5, T), Vector2.new(L + lenX, T) },
+        { Vector2.new(L, T - 0.5), Vector2.new(L, T + lenY) },
+        { Vector2.new(R + 0.5, T), Vector2.new(R - lenX, T) },
+        { Vector2.new(R, T - 0.5), Vector2.new(R, T + lenY) },
+        { Vector2.new(L - 0.5, B), Vector2.new(L + lenX, B) },
+        { Vector2.new(L, B + 0.5), Vector2.new(L, B - lenY) },
+        { Vector2.new(R + 0.5, B), Vector2.new(R - lenX, B) },
+        { Vector2.new(R, B + 0.5), Vector2.new(R, B - lenY) },
+    }
+    local bgCoords = {
+        { Vector2.new(L - 1, T), Vector2.new(L + lenX + 1, T) },
+        { Vector2.new(L, T - 1), Vector2.new(L, T + lenY + 1) },
+        { Vector2.new(R + 1, T), Vector2.new(R - lenX - 1, T) },
+        { Vector2.new(R, T - 1), Vector2.new(R, T + lenY + 1) },
+        { Vector2.new(L - 1, B), Vector2.new(L + lenX + 1, B) },
+        { Vector2.new(L, B + 1), Vector2.new(L, B - lenY - 1) },
+        { Vector2.new(R + 1, B), Vector2.new(R - lenX - 1, B) },
+        { Vector2.new(R, B + 1), Vector2.new(R, B - lenY - 1) },
     }
     for i = 1, 8 do
-        local p1, p2 = coords[i][1], coords[i][2]
         local out = outlines and outlines[i]
         if out then
-            out.From = p1
-            out.To = p2
+            out.From = bgCoords[i][1]
+            out.To = bgCoords[i][2]
             out.Visible = true
         end
         local line = lines[i]
         if line then
-            line.From = p1
-            line.To = p2
+            line.From = fgCoords[i][1]
+            line.To = fgCoords[i][2]
             line.Color = color
             line.Visible = true
         end
@@ -2260,10 +2271,14 @@ local function updateBoxVisual(d: { [string]: any }, boxMode: string, x: number,
     local pw, ph = math.max(math.floor(w + 0.5), 6), math.max(math.floor(h + 0.5), 6)
     if boxMode == "2D" then
         if d.BoxFill then
-            d.BoxFill.Size = Vector2.new(pw, ph)
-            d.BoxFill.Position = Vector2.new(px, py)
-            d.BoxFill.Color = color
-            d.BoxFill.Visible = true
+            if pw > 4 and ph > 4 then
+                d.BoxFill.Size = Vector2.new(pw - 2, ph - 2)
+                d.BoxFill.Position = Vector2.new(px + 1, py + 1)
+                d.BoxFill.Color = color
+                d.BoxFill.Visible = true
+            else
+                d.BoxFill.Visible = false
+            end
         end
         d.BoxOutline.Size = Vector2.new(pw, ph)
         d.BoxOutline.Position = Vector2.new(px, py)
@@ -2278,10 +2293,14 @@ local function updateBoxVisual(d: { [string]: any }, boxMode: string, x: number,
         end
     elseif boxMode == "Corner" then
         if d.BoxFill then
-            d.BoxFill.Size = Vector2.new(pw, ph)
-            d.BoxFill.Position = Vector2.new(px, py)
-            d.BoxFill.Color = color
-            d.BoxFill.Visible = true
+            if pw > 4 and ph > 4 then
+                d.BoxFill.Size = Vector2.new(pw - 2, ph - 2)
+                d.BoxFill.Position = Vector2.new(px + 1, py + 1)
+                d.BoxFill.Color = color
+                d.BoxFill.Visible = true
+            else
+                d.BoxFill.Visible = false
+            end
         end
         d.BoxOutline.Visible = false
         d.Box.Visible = false
@@ -2411,13 +2430,13 @@ local function computeActorScreenBox(model: Model, root: BasePart, cam: Camera):
     local maxX, maxY = -math.huge, -math.huge
     local anyVis = false
 
-    local topAnchor = (head and head.Position or root.Position) + Vector3.new(0, 0.72, 0)
-    local botAnchor = root.Position - Vector3.new(0, 2.85, 0)
+    local topAnchor = (head and head.Position or root.Position) + Vector3.new(0, 0.62, 0)
+    local botAnchor = root.Position - Vector3.new(0, 2.75, 0)
     local feet = { model:FindFirstChild("LeftFoot"), model:FindFirstChild("RightFoot") }
     local lowY = math.huge
     for _, f in ipairs(feet) do
         if f and f:IsA("BasePart") then
-            lowY = math.min(lowY, f.Position.Y - 0.35)
+            lowY = math.min(lowY, f.Position.Y - 0.28)
         end
     end
     if lowY < math.huge then
@@ -2452,9 +2471,9 @@ local function computeActorScreenBox(model: Model, root: BasePart, cam: Camera):
     end
 
     local boxH = math.max(maxY - minY, 10)
-    local minWidth = math.max(boxH * 0.56, 8)
-    local measuredW = (maxX > minX) and (maxX - minX + boxH * 0.14) or minWidth
-    local boxW = math.clamp(math.max(measuredW, minWidth), 8, math.max(boxH * 1.15, 24))
+    local minWidth = math.max(boxH * 0.50, 8)
+    local measuredW = (maxX > minX) and (maxX - minX + boxH * 0.12) or minWidth
+    local boxW = math.clamp(math.max(measuredW, minWidth), 8, math.max(boxH * 0.92, 22))
     local cx = (t2d.X + b2d.X) * 0.5
     return true, math.floor(cx - boxW * 0.5 + 0.5), math.floor(minY + 0.5), math.floor(boxW + 0.5), math.floor(boxH + 0.5)
 end
@@ -2492,7 +2511,12 @@ local function compute3DScreenBox(inst: Instance, fallbackRoot: BasePart, cam: C
     if not anyVis or maxX <= minX or maxY <= minY then
         return false, 0, 0, 0, 0
     end
-    return true, minX, minY, math.clamp(maxX - minX, 8, 900), math.clamp(maxY - minY, 8, 900)
+    local pad = 2
+    local x = math.floor(minX - pad + 0.5)
+    local y = math.floor(minY - pad + 0.5)
+    local w = math.clamp(math.floor((maxX - minX) + pad * 2 + 0.5), 10, 900)
+    local h = math.clamp(math.floor((maxY - minY) + pad * 2 + 0.5), 10, 900)
+    return true, x, y, w, h
 end
 
 local function computeHealthColor(ratio: number): Color3
@@ -2506,35 +2530,43 @@ end
 local ACTOR_LABEL_KEYS = { "Name", "Health", "Distance", "KDR", "Reports", "Weapon", "Downed" }
 local TAG_LABEL_KEYS = { "Name", "Distance", "Value", "Respawn" }
 
-local function createDrawLinePool(count: number, thickness: number, color: Color3?): { any }
+local function createDrawLinePool(count: number, thickness: number, color: Color3?, transparency: number?, zIndex: number?): { any }
     local arr = {}
     for i = 1, count do
         local props: { [string]: any } = { Thickness = thickness, Visible = false }
         if color then
             props.Color = color
         end
+        if transparency then
+            props.Transparency = transparency
+        end
+        if zIndex then
+            props.ZIndex = zIndex
+        end
         arr[i] = newDraw("Line", props)
     end
     return arr
 end
 
+local OUTLINE_DARK = Color3.fromRGB(8, 10, 14)
+
 CreateActorDrawings = function()
     local d: { [string]: any } = {
-        BoxFill = newDraw("Square", { Thickness = 1, Filled = true, Transparency = 0.08, Visible = false }),
-        BoxOutline = newDraw("Square", { Thickness = 2.8, Filled = false, Color = Color3.new(0, 0, 0), Visible = false }),
-        CornerOutlines = createDrawLinePool(8, 3.0, Color3.new(0, 0, 0)),
-        Box = newDraw("Square", { Thickness = 1.2, Filled = false, Visible = false }),
-        Corners = createDrawLinePool(8, 1.3),
-        Bones = createDrawLinePool(#BONE_PAIRS, 1.4),
-        HpBg = newDraw("Square", { Thickness = 1, Filled = true, Color = Color3.new(0, 0, 0), Visible = false }),
-        HpFill = newDraw("Square", { Thickness = 1, Filled = true, Visible = false }),
-        Tracer = newDraw("Line", { Thickness = 1.1, Transparency = 0.72, Visible = false }),
+        BoxFill = newDraw("Square", { Thickness = 1, Filled = true, Transparency = 0.05, ZIndex = 1, Visible = false }),
+        BoxOutline = newDraw("Square", { Thickness = 2.0, Filled = false, Color = OUTLINE_DARK, Transparency = 0.72, ZIndex = 2, Visible = false }),
+        CornerOutlines = createDrawLinePool(8, 2.0, OUTLINE_DARK, 0.72, 2),
+        Box = newDraw("Square", { Thickness = 1.0, Filled = false, Transparency = 0.96, ZIndex = 3, Visible = false }),
+        Corners = createDrawLinePool(8, 1.0, nil, 0.96, 3),
+        Bones = createDrawLinePool(#BONE_PAIRS, 1.15, nil, 0.88, 2),
+        HpBg = newDraw("Square", { Thickness = 1, Filled = true, Color = OUTLINE_DARK, Transparency = 0.78, ZIndex = 2, Visible = false }),
+        HpFill = newDraw("Square", { Thickness = 1, Filled = true, ZIndex = 3, Visible = false }),
+        Tracer = newDraw("Line", { Thickness = 1.0, Transparency = 0.62, ZIndex = 1, Visible = false }),
         Labels = {},
-        ArrowOutline = newDraw("Triangle", { Filled = true, Color = Color3.new(0, 0, 0), Visible = false }),
-        Arrow = newDraw("Triangle", { Filled = true, Visible = false }),
+        ArrowOutline = newDraw("Triangle", { Filled = true, Color = OUTLINE_DARK, Transparency = 0.75, ZIndex = 2, Visible = false }),
+        Arrow = newDraw("Triangle", { Filled = true, ZIndex = 3, Visible = false }),
     }
     for _, key in ipairs(ACTOR_LABEL_KEYS) do
-        d.Labels[key] = newDraw("Text", { Center = true, Outline = true, Size = 13, Font = 2, Visible = false })
+        d.Labels[key] = newDraw("Text", { Center = true, Outline = true, Size = 13, Font = 2, ZIndex = 5, Visible = false })
     end
     return d
 end
@@ -2587,21 +2619,21 @@ end
 
 CreateTagDrawings = function()
     local d: { [string]: any } = {
-        BoxFill = newDraw("Square", { Thickness = 1, Filled = true, Transparency = 0.08, Visible = false }),
-        BoxOutline = newDraw("Square", { Thickness = 2.8, Filled = false, Color = Color3.new(0, 0, 0), Visible = false }),
-        CornerOutlines = createDrawLinePool(8, 3.0, Color3.new(0, 0, 0)),
-        Box = newDraw("Square", { Thickness = 1.2, Filled = false, Visible = false }),
-        Corners = createDrawLinePool(8, 1.3),
-        Bones = createDrawLinePool(#BONE_PAIRS, 1.3),
-        DotOutline = newDraw("Circle", { Filled = true, Radius = 4.4, NumSides = 14, Color = Color3.new(0, 0, 0), Visible = false }),
-        Dot = newDraw("Circle", { Filled = true, Radius = 2.7, NumSides = 14, Visible = false }),
-        Tracer = newDraw("Line", { Thickness = 1.1, Transparency = 0.72, Visible = false }),
+        BoxFill = newDraw("Square", { Thickness = 1, Filled = true, Transparency = 0.05, ZIndex = 1, Visible = false }),
+        BoxOutline = newDraw("Square", { Thickness = 2.0, Filled = false, Color = OUTLINE_DARK, Transparency = 0.72, ZIndex = 2, Visible = false }),
+        CornerOutlines = createDrawLinePool(8, 2.0, OUTLINE_DARK, 0.72, 2),
+        Box = newDraw("Square", { Thickness = 1.0, Filled = false, Transparency = 0.96, ZIndex = 3, Visible = false }),
+        Corners = createDrawLinePool(8, 1.0, nil, 0.96, 3),
+        Bones = createDrawLinePool(#BONE_PAIRS, 1.15, nil, 0.88, 2),
+        DotOutline = newDraw("Circle", { Filled = true, Radius = 4.0, NumSides = 14, Color = OUTLINE_DARK, Transparency = 0.75, ZIndex = 2, Visible = false }),
+        Dot = newDraw("Circle", { Filled = true, Radius = 2.5, NumSides = 14, ZIndex = 3, Visible = false }),
+        Tracer = newDraw("Line", { Thickness = 1.0, Transparency = 0.62, ZIndex = 1, Visible = false }),
         Labels = {},
-        ArrowOutline = newDraw("Triangle", { Filled = true, Color = Color3.new(0, 0, 0), Visible = false }),
-        Arrow = newDraw("Triangle", { Filled = true, Visible = false }),
+        ArrowOutline = newDraw("Triangle", { Filled = true, Color = OUTLINE_DARK, Transparency = 0.75, ZIndex = 2, Visible = false }),
+        Arrow = newDraw("Triangle", { Filled = true, ZIndex = 3, Visible = false }),
     }
     for _, key in ipairs(TAG_LABEL_KEYS) do
-        d.Labels[key] = newDraw("Text", { Center = true, Outline = true, Size = 13, Font = 2, Visible = false })
+        d.Labels[key] = newDraw("Text", { Center = true, Outline = true, Size = 13, Font = 2, ZIndex = 5, Visible = false })
     end
     return d
 end
@@ -2652,8 +2684,8 @@ local function renderDockedLabels(
 
         if hasHpBar then
             if zoneName == "Left" or zoneName == "Right" then
-                local barW = 3
-                local barX = math.floor(((zoneName == "Left") and (boxX - 6) or (boxX + boxW + 3)) + 0.5)
+                local barW = 2
+                local barX = math.floor(((zoneName == "Left") and (boxX - 5) or (boxX + boxW + 3)) + 0.5)
                 local fillH = math.max(math.floor(boxH * hpRatio + 0.5), 1)
                 d.HpBg.Position = Vector2.new(barX - 1, boxY - 1)
                 d.HpBg.Size = Vector2.new(barW + 2, boxH + 2)
@@ -2663,8 +2695,8 @@ local function renderDockedLabels(
                 d.HpFill.Color = computeHealthColor(hpRatio)
                 d.HpFill.Visible = true
             else
-                local barH = 3
-                local barY = math.floor(((zoneName == "Top") and (boxY - 6) or (boxY + boxH + 3)) + 0.5)
+                local barH = 2
+                local barY = math.floor(((zoneName == "Top") and (boxY - 5) or (boxY + boxH + 3)) + 0.5)
                 local fillW = math.max(math.floor(boxW * hpRatio + 0.5), 1)
                 d.HpBg.Position = Vector2.new(boxX - 1, barY - 1)
                 d.HpBg.Size = Vector2.new(boxW + 2, barH + 2)
@@ -2678,7 +2710,7 @@ local function renderDockedLabels(
 
         local n = #textKeys
         if n > 0 then
-            local barPad = hasHpBar and 7 or 3
+            local barPad = hasHpBar and 6 or 3
             local centerX = math.floor(boxX + boxW * 0.5 + 0.5)
             local totalTextH = n * lineStep
             local sideStartY = math.floor(boxY + math.max((boxH - totalTextH) * 0.5, 0) + 0.5)
@@ -5203,16 +5235,25 @@ do
         end
     end
 
-    -- Subtle Translucent Fill, Box, Corners, Tracer & Arrow Overlays
+    -- Subtle Translucent Fill, Hairline Box, Crisp Corners, Tracer & Arrow Overlays
     local BoxFillFrame = Instance.new("Frame")
-    BoxFillFrame.Position = UDim2.fromOffset(curBoxX, curBoxY)
-    BoxFillFrame.Size = UDim2.fromOffset(curBoxW, curBoxH)
+    BoxFillFrame.Position = UDim2.fromOffset(curBoxX + 1, curBoxY + 1)
+    BoxFillFrame.Size = UDim2.fromOffset(curBoxW - 2, curBoxH - 2)
     BoxFillFrame.BackgroundColor3 = THEME.Accent
-    BoxFillFrame.BackgroundTransparency = 0.9
+    BoxFillFrame.BackgroundTransparency = 0.94
     BoxFillFrame.BorderSizePixel = 0
     BoxFillFrame.ZIndex = 5
     BoxFillFrame.Visible = false
     BoxFillFrame.Parent = Stage
+
+    local BoxShadowFrame = Instance.new("Frame")
+    BoxShadowFrame.Position = UDim2.fromOffset(curBoxX - 1, curBoxY - 1)
+    BoxShadowFrame.Size = UDim2.fromOffset(curBoxW + 2, curBoxH + 2)
+    BoxShadowFrame.BackgroundTransparency = 1
+    BoxShadowFrame.ZIndex = 5
+    BoxShadowFrame.Visible = false
+    BoxShadowFrame.Parent = Stage
+    addStroke(BoxShadowFrame, Color3.fromRGB(8, 10, 14), 1, 0.48)
 
     local BoxOutlineFrame = Instance.new("Frame")
     BoxOutlineFrame.Position = UDim2.fromOffset(curBoxX, curBoxY)
@@ -5221,7 +5262,7 @@ do
     BoxOutlineFrame.ZIndex = 6
     BoxOutlineFrame.Visible = false
     BoxOutlineFrame.Parent = Stage
-    local boxStroke = addStroke(BoxOutlineFrame, THEME.Accent, 1.5, 0)
+    local boxStroke = addStroke(BoxOutlineFrame, THEME.Accent, 1, 0.04)
 
     local CornerFrames: { Frame } = {}
     for _ = 1, 8 do
@@ -5230,6 +5271,7 @@ do
         f.ZIndex = 7
         f.Visible = false
         f.Parent = Stage
+        addStroke(f, Color3.fromRGB(8, 10, 14), 0.8, 0.55)
         table.insert(CornerFrames, f)
     end
 
@@ -5370,8 +5412,10 @@ do
             Pedestal.Size = UDim2.fromOffset(112, 22)
         end
         Pedestal.Position = UDim2.fromOffset(curBoxX + curBoxW * 0.5, curBoxY + curBoxH - 2)
-        BoxFillFrame.Position = UDim2.fromOffset(curBoxX, curBoxY)
-        BoxFillFrame.Size = UDim2.fromOffset(curBoxW, curBoxH)
+        BoxFillFrame.Position = UDim2.fromOffset(curBoxX + 1, curBoxY + 1)
+        BoxFillFrame.Size = UDim2.fromOffset(curBoxW - 2, curBoxH - 2)
+        BoxShadowFrame.Position = UDim2.fromOffset(curBoxX - 1, curBoxY - 1)
+        BoxShadowFrame.Size = UDim2.fromOffset(curBoxW + 2, curBoxH + 2)
         BoxOutlineFrame.Position = UDim2.fromOffset(curBoxX, curBoxY)
         BoxOutlineFrame.Size = UDim2.fromOffset(curBoxW, curBoxH)
 
@@ -5391,12 +5435,12 @@ do
             end
         end
 
-        local cw, ch = isCube and 20 or 18, isCube and 20 or 22
+        local cw, ch = isCube and 16 or 15, isCube and 16 or 18
         local cSpecs = {
-            { curBoxX, curBoxY, cw, 2 }, { curBoxX, curBoxY, 2, ch },
-            { curBoxX + curBoxW - cw, curBoxY, cw, 2 }, { curBoxX + curBoxW - 2, curBoxY, 2, ch },
-            { curBoxX, curBoxY + curBoxH - 2, cw, 2 }, { curBoxX, curBoxY + curBoxH - ch, 2, ch },
-            { curBoxX + curBoxW - cw, curBoxY + curBoxH - 2, cw, 2 }, { curBoxX + curBoxW - 2, curBoxY + curBoxH - ch, 2, ch },
+            { curBoxX, curBoxY, cw, 1 }, { curBoxX, curBoxY, 1, ch },
+            { curBoxX + curBoxW - cw, curBoxY, cw, 1 }, { curBoxX + curBoxW - 1, curBoxY, 1, ch },
+            { curBoxX, curBoxY + curBoxH - 1, cw, 1 }, { curBoxX, curBoxY + curBoxH - ch, 1, ch },
+            { curBoxX + curBoxW - cw, curBoxY + curBoxH - 1, cw, 1 }, { curBoxX + curBoxW - 1, curBoxY + curBoxH - ch, 1, ch },
         }
         for i, sp in ipairs(cSpecs) do
             local cf = CornerFrames[i]
@@ -5589,6 +5633,7 @@ do
         -- Fill, Box & Corners
         BoxFillFrame.Visible = (cfg.Box == "2D" or cfg.Box == "Corner")
         BoxFillFrame.BackgroundColor3 = primaryCol
+        BoxShadowFrame.Visible = (cfg.Box == "2D")
         BoxOutlineFrame.Visible = (cfg.Box == "2D")
         boxStroke.Color = primaryCol
         for _, cf in ipairs(CornerFrames) do

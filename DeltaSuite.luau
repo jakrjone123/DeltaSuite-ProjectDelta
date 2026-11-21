@@ -544,29 +544,54 @@ function Delta.GetPlayerMeta(player: Player): (string?, number?)
 
     local rsPlayer = Delta.GetRSPlayer(player)
     local status = rsPlayer and rsPlayer:FindFirstChild("Status")
+    local journey = status and status:FindFirstChild("Journey")
+    local wipeStats = journey and journey:FindFirstChild("WipeStatistics")
     local statsF = (rsPlayer and (rsPlayer:FindFirstChild("Stats") or rsPlayer:FindFirstChild("StartUp"))) or nil
     local leader = player:FindFirstChild("leaderstats")
-    local sources: { Instance? } = { player, leader, rsPlayer, status, statsF }
-
-    local kdrNum = readNumericStat(sources, { "KDR", "KD", "KillDeathRatio" })
-    local kills = readNumericStat(sources, { "Kills", "PlayerKills", "Eliminations" })
-    local deaths = readNumericStat(sources, { "Deaths" })
+    local sources: { Instance? } = { wipeStats, journey, status, rsPlayer, player, leader, statsF }
 
     local kdrStr: string? = nil
-    if kdrNum ~= nil then
-        kdrStr = string.format("%.2f", kdrNum)
-    elseif kills ~= nil then
-        local d = math.max(deaths or 1, 1)
-        kdrStr = string.format("%.2f", kills / d)
+    local reports: number? = nil
+
+    -- Check ReplicatedStorage.ReportList (MostWanted & Recent use "<PlayerName>_<UserId>" with KDR & TotalFlags)
+    local reportList = ReplicatedStorage:FindFirstChild("ReportList")
+    if reportList then
+        local repKey = player.Name .. "_" .. tostring(player.UserId)
+        local mw = reportList:FindFirstChild("MostWanted")
+        local rec = reportList:FindFirstChild("Recent")
+        local repFolder = (mw and mw:FindFirstChild(repKey))
+            or (rec and rec:FindFirstChild(repKey))
+            or reportList:FindFirstChild(repKey)
+        if repFolder then
+            local rawKdr = repFolder:GetAttribute("KDR")
+            if type(rawKdr) == "string" and rawKdr ~= "" then
+                -- Project Delta stores "Kills/Deaths/Ratio" e.g. "16366/12404/1.3"
+                local ratio = rawKdr:match("/([^/]+)$")
+                kdrStr = ratio or rawKdr
+            elseif type(rawKdr) == "number" then
+                kdrStr = string.format("%.2f", rawKdr)
+            end
+            local flags = repFolder:GetAttribute("TotalFlags")
+            if type(flags) == "number" then
+                reports = flags
+            end
+        end
     end
 
-    local reports = readNumericStat(sources, { "Reports", "ReportCount", "TotalReports" })
-    local reportList = ReplicatedStorage:FindFirstChild("ReportList")
-    if not reports and reportList then
-        local entry = reportList:FindFirstChild(player.Name) or reportList:FindFirstChild(tostring(player.UserId))
-        if entry then
-            reports = readNumericStat({ entry }, { "Reports", "Count", "Value" }) or #entry:GetChildren()
+    if not kdrStr then
+        local kdrNum = readNumericStat(sources, { "KDR", "KD", "KillDeathRatio" })
+        local kills = readNumericStat(sources, { "K_PVP", "Kills", "PlayerKills", "Eliminations" })
+        local deaths = readNumericStat(sources, { "D_PVP", "Deaths" })
+        if kdrNum ~= nil then
+            kdrStr = string.format("%.2f", kdrNum)
+        elseif kills ~= nil then
+            local d = math.max(deaths or 1, 1)
+            kdrStr = string.format("%.2f", kills / d)
         end
+    end
+
+    if not reports then
+        reports = readNumericStat(sources, { "TotalFlags", "Reports", "ReportCount", "TotalReports" })
     end
 
     PlayerMetaCache[player] = { KDR = kdrStr, Reports = reports, UpdatedAt = now }
@@ -599,7 +624,11 @@ function Delta.GetContainerRespawnText(inst: Instance): string?
 end
 
 function Delta.IsQuestObject(inst: Instance): boolean
-    if inst:GetAttribute("Quest") ~= nil or inst:GetAttribute("QuestItem") == true or inst:GetAttribute("IsQuestItem") == true then
+    if inst:GetAttribute("ItemId") ~= nil or inst:GetAttribute("Quest") ~= nil or inst:GetAttribute("QuestItem") == true or inst:GetAttribute("IsQuestItem") == true then
+        return true
+    end
+    local props = inst:FindFirstChild("ItemProperties")
+    if props and props:GetAttribute("Collectable") == true then
         return true
     end
     local info = ItemsPriceCache[inst.Name]
@@ -999,10 +1028,11 @@ local function registerWorldTag(inst: Instance, category: "Container" | "Corpse"
             end)
         end
     elseif resolvedCategory == "Dropped" or resolvedCategory == "Quest" then
-        local info = ItemsPriceCache[inst.Name]
+        local itemKey = tostring(inst:GetAttribute("ItemId") or inst.Name)
+        local info = ItemsPriceCache[itemKey] or ItemsPriceCache[inst.Name]
         local props = inst:FindFirstChild("ItemProperties")
         local price = (info and info.Price) or tonumber(inst:GetAttribute("Price")) or (props and tonumber(props:GetAttribute("Price"))) or 0
-        tag.CachedLabel = info and info.Name or tostring(inst:GetAttribute("DisplayName") or inst.Name)
+        tag.CachedLabel = info and info.Name or tostring(inst:GetAttribute("DisplayName") or itemKey)
         tag.MaxPrice = price
         tag.TotalValue = price
         tag.ItemCount = 1
@@ -2292,7 +2322,7 @@ local function renderTagESP(tag: TagEntry, cam: Camera, vp: Vector2)
     end
 
     local cfg: any = nil
-    local color = THEME.Accent
+    local color = Color3.fromRGB(56, 189, 248)
     if tag.Category == "Exit" then
         cfg = Config.ExitESP
         color = Config.ExitESP.Color
@@ -2311,6 +2341,10 @@ local function renderTagESP(tag: TagEntry, cam: Camera, vp: Vector2)
     end
 
     if not cfg or not cfg.Enabled then
+        hideDrawingsTable(tag.Draw, tag.Highlight)
+        return
+    end
+    if tag.Category == "Quest" and (tag.Instance:GetAttribute("HideObject") == true or tag.Instance:GetAttribute("Complete") == true) then
         hideDrawingsTable(tag.Draw, tag.Highlight)
         return
     end
@@ -2736,7 +2770,7 @@ end
 local WatermarkFrame = Instance.new("Frame")
 WatermarkFrame.Name = "Watermark"
 WatermarkFrame.AnchorPoint = Vector2.new(1, 0)
-WatermarkFrame.Position = UDim2.new(1, -16, 0, 14)
+WatermarkFrame.Position = UDim2.new(1, -16, 0, 46)
 WatermarkFrame.Size = UDim2.fromOffset(310, 30)
 WatermarkFrame.BackgroundColor3 = THEME.BgMain
 WatermarkFrame.BackgroundTransparency = 0.12

@@ -2191,6 +2191,24 @@ end
 -- 8. VISUALS & ESP RENDERING (DRAWING API + POOLED CHAMS)
 -- ============================================================================
 local HasDrawing = (type(Drawing) == "table" and type(Drawing.new) == "function")
+local DrawingOpaqueIsZero = false
+if HasDrawing then
+    pcall(function()
+        local probe = Drawing.new("Line")
+        if probe then
+            DrawingOpaqueIsZero = (probe.Transparency < 0.5)
+            probe:Remove()
+        end
+    end)
+end
+
+local function drawTrans(opacity: number): number
+    local op = math.clamp(opacity, 0, 1)
+    if DrawingOpaqueIsZero then
+        return 1 - op
+    end
+    return op
+end
 
 local function newDraw(kind: string, props: { [string]: any }): any
     if not HasDrawing then
@@ -2577,22 +2595,22 @@ local OUTLINE_DARK = Color3.fromRGB(8, 10, 14)
 
 CreateActorDrawings = function()
     local d: { [string]: any } = {
-        BoxFill = newDraw("Square", { Thickness = 1, Filled = true, Transparency = 0.05, ZIndex = 1, Visible = false }),
-        BoxOutline = newDraw("Square", { Thickness = 2.0, Filled = false, Color = OUTLINE_DARK, Transparency = 0.72, ZIndex = 2, Visible = false }),
-        CornerOutlines = createDrawLinePool(8, 2.0, OUTLINE_DARK, 0.72, 2),
-        Box = newDraw("Square", { Thickness = 1.0, Filled = false, Transparency = 0.96, ZIndex = 3, Visible = false }),
-        Corners = createDrawLinePool(8, 1.0, nil, 0.96, 3),
-        BoneOutlines = createDrawLinePool(#BONE_PAIRS, 2.7, OUTLINE_DARK, 0.60, 3),
-        Bones = createDrawLinePool(#BONE_PAIRS, 1.6, nil, 1.0, 4),
-        HpBg = newDraw("Square", { Thickness = 1, Filled = true, Color = OUTLINE_DARK, Transparency = 0.78, ZIndex = 2, Visible = false }),
-        HpFill = newDraw("Square", { Thickness = 1, Filled = true, ZIndex = 3, Visible = false }),
-        Tracer = newDraw("Line", { Thickness = 1.0, Transparency = 0.62, ZIndex = 1, Visible = false }),
+        BoxFill = newDraw("Square", { Thickness = 1, Filled = true, Transparency = drawTrans(0.08), ZIndex = 1, Visible = false }),
+        BoxOutline = newDraw("Square", { Thickness = 2.0, Filled = false, Color = OUTLINE_DARK, Transparency = drawTrans(0.65), ZIndex = 2, Visible = false }),
+        CornerOutlines = createDrawLinePool(8, 2.0, OUTLINE_DARK, drawTrans(0.65), 2),
+        Box = newDraw("Square", { Thickness = 1.0, Filled = false, Transparency = drawTrans(0.98), ZIndex = 3, Visible = false }),
+        Corners = createDrawLinePool(8, 1.0, nil, drawTrans(0.98), 3),
+        BoneOutlines = createDrawLinePool(#BONE_PAIRS, 2.9, OUTLINE_DARK, drawTrans(0.72), 3),
+        Bones = createDrawLinePool(#BONE_PAIRS, 1.75, nil, drawTrans(1.0), 4),
+        HpBg = newDraw("Square", { Thickness = 1, Filled = true, Color = OUTLINE_DARK, Transparency = drawTrans(0.75), ZIndex = 2, Visible = false }),
+        HpFill = newDraw("Square", { Thickness = 1, Filled = true, Transparency = drawTrans(1.0), ZIndex = 3, Visible = false }),
+        Tracer = newDraw("Line", { Thickness = 1.0, Transparency = drawTrans(0.65), ZIndex = 1, Visible = false }),
         Labels = {},
-        ArrowOutline = newDraw("Triangle", { Filled = true, Color = OUTLINE_DARK, Transparency = 0.75, ZIndex = 2, Visible = false }),
-        Arrow = newDraw("Triangle", { Filled = true, ZIndex = 3, Visible = false }),
+        ArrowOutline = newDraw("Triangle", { Filled = true, Color = OUTLINE_DARK, Transparency = drawTrans(0.75), ZIndex = 2, Visible = false }),
+        Arrow = newDraw("Triangle", { Filled = true, Transparency = drawTrans(1.0), ZIndex = 3, Visible = false }),
     }
     for _, key in ipairs(ACTOR_LABEL_KEYS) do
-        d.Labels[key] = newDraw("Text", { Center = true, Outline = true, Size = 13, Font = 2, ZIndex = 5, Visible = false })
+        d.Labels[key] = newDraw("Text", { Center = true, Outline = true, Size = 13, Font = 2, Transparency = drawTrans(1.0), ZIndex = 5, Visible = false })
     end
     return d
 end
@@ -2645,22 +2663,22 @@ end
 
 CreateTagDrawings = function()
     local d: { [string]: any } = {
-        BoxFill = newDraw("Square", { Thickness = 1, Filled = true, Transparency = 0.05, ZIndex = 1, Visible = false }),
-        BoxOutline = newDraw("Square", { Thickness = 2.0, Filled = false, Color = OUTLINE_DARK, Transparency = 0.72, ZIndex = 2, Visible = false }),
-        CornerOutlines = createDrawLinePool(8, 2.0, OUTLINE_DARK, 0.72, 2),
-        Box = newDraw("Square", { Thickness = 1.0, Filled = false, Transparency = 0.96, ZIndex = 3, Visible = false }),
-        Corners = createDrawLinePool(8, 1.0, nil, 0.96, 3),
-        BoneOutlines = createDrawLinePool(#BONE_PAIRS, 2.7, OUTLINE_DARK, 0.60, 3),
-        Bones = createDrawLinePool(#BONE_PAIRS, 1.6, nil, 1.0, 4),
-        DotOutline = newDraw("Circle", { Filled = true, Radius = 4.0, NumSides = 14, Color = OUTLINE_DARK, Transparency = 0.75, ZIndex = 2, Visible = false }),
-        Dot = newDraw("Circle", { Filled = true, Radius = 2.5, NumSides = 14, ZIndex = 3, Visible = false }),
-        Tracer = newDraw("Line", { Thickness = 1.0, Transparency = 0.62, ZIndex = 1, Visible = false }),
+        BoxFill = newDraw("Square", { Thickness = 1, Filled = true, Transparency = drawTrans(0.08), ZIndex = 1, Visible = false }),
+        BoxOutline = newDraw("Square", { Thickness = 2.0, Filled = false, Color = OUTLINE_DARK, Transparency = drawTrans(0.65), ZIndex = 2, Visible = false }),
+        CornerOutlines = createDrawLinePool(8, 2.0, OUTLINE_DARK, drawTrans(0.65), 2),
+        Box = newDraw("Square", { Thickness = 1.0, Filled = false, Transparency = drawTrans(0.98), ZIndex = 3, Visible = false }),
+        Corners = createDrawLinePool(8, 1.0, nil, drawTrans(0.98), 3),
+        BoneOutlines = createDrawLinePool(#BONE_PAIRS, 2.9, OUTLINE_DARK, drawTrans(0.72), 3),
+        Bones = createDrawLinePool(#BONE_PAIRS, 1.75, nil, drawTrans(1.0), 4),
+        DotOutline = newDraw("Circle", { Filled = true, Radius = 4.0, NumSides = 14, Color = OUTLINE_DARK, Transparency = drawTrans(0.75), ZIndex = 2, Visible = false }),
+        Dot = newDraw("Circle", { Filled = true, Radius = 2.5, NumSides = 14, Transparency = drawTrans(1.0), ZIndex = 3, Visible = false }),
+        Tracer = newDraw("Line", { Thickness = 1.0, Transparency = drawTrans(0.65), ZIndex = 1, Visible = false }),
         Labels = {},
-        ArrowOutline = newDraw("Triangle", { Filled = true, Color = OUTLINE_DARK, Transparency = 0.75, ZIndex = 2, Visible = false }),
-        Arrow = newDraw("Triangle", { Filled = true, ZIndex = 3, Visible = false }),
+        ArrowOutline = newDraw("Triangle", { Filled = true, Color = OUTLINE_DARK, Transparency = drawTrans(0.75), ZIndex = 2, Visible = false }),
+        Arrow = newDraw("Triangle", { Filled = true, Transparency = drawTrans(1.0), ZIndex = 3, Visible = false }),
     }
     for _, key in ipairs(TAG_LABEL_KEYS) do
-        d.Labels[key] = newDraw("Text", { Center = true, Outline = true, Size = 13, Font = 2, ZIndex = 5, Visible = false })
+        d.Labels[key] = newDraw("Text", { Center = true, Outline = true, Size = 13, Font = 2, Transparency = drawTrans(1.0), ZIndex = 5, Visible = false })
     end
     return d
 end
@@ -3057,8 +3075,8 @@ local function renderTagESP(tag: TagEntry, cam: Camera, vp: Vector2)
 end
 
 -- HUD FOV Circle
-local FOVCircleOutline = newDraw("Circle", { Thickness = 3.0, NumSides = 72, Filled = false, Color = OUTLINE_DARK, Transparency = 0.48, ZIndex = 9, Visible = false })
-local FOVCircle = newDraw("Circle", { Thickness = 1.85, NumSides = 72, Filled = false, Transparency = 0.96, ZIndex = 10, Visible = false })
+local FOVCircleOutline = newDraw("Circle", { Thickness = 3.0, NumSides = 72, Filled = false, Color = OUTLINE_DARK, Transparency = drawTrans(0.55), ZIndex = 9, Visible = false })
+local FOVCircle = newDraw("Circle", { Thickness = 1.9, NumSides = 72, Filled = false, Transparency = drawTrans(0.95), ZIndex = 10, Visible = false })
 
 -- Connect Workspace & Players Event Listeners cleanly
 local function bindPlayerTracking(player: Player)
@@ -6126,7 +6144,7 @@ Session.Bind(RunService.RenderStepped, function(dt: number)
             FOVCircle.Radius = fovRad
             FOVCircle.Color = Config.Aimbot.FOVColor
             FOVCircle.Filled = Config.Aimbot.FOVFilled
-            FOVCircle.Transparency = Config.Aimbot.FOVFilled and 0.18 or 0.96
+            FOVCircle.Transparency = Config.Aimbot.FOVFilled and drawTrans(0.16) or drawTrans(0.95)
             FOVCircle.Visible = true
         else
             if FOVCircleOutline then

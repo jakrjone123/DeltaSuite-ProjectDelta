@@ -2,7 +2,7 @@
 --[[
     DeltaSuite — Project Delta (PlaceId: 7336302630)
     Scope: Combat & Visuals/ESP with clean Obsidian Tactical UI
-    Designed around Project Delta's live modules, ballistics, hitboxes,
+    Designed around Project Delta's live modules, ballistics, targeting,
     clans/factions, AiZones, LootContainers, ExitLocations, and Lighting.
 ]]
 
@@ -198,7 +198,7 @@ local function createDefaultConfig()
             MouseSens = 1.0,
             MaxDistance = 800,
             ShowFOV = true,
-            FOVRadius = 140,
+            FOVRadius = 185,
             FOVColor = Color3.fromRGB(56, 189, 248),
             FOVDynamic = true,
             FOVFilled = false,
@@ -207,7 +207,7 @@ local function createDefaultConfig()
             Enabled = false,
             Key = Enum.KeyCode.Unknown :: BindValue,
             Mode = "Always", -- Always | Hold | Toggle
-            HitPart = "FaceHitBox",
+            HitPart = "Head",
             HitChance = 100,
             TeamCheck = true,
             VisibleCheck = true,
@@ -217,6 +217,20 @@ local function createDefaultConfig()
             DropComp = true,
             UseFOV = true,
         },
+        Targeting = {
+            FOV = 185,
+            DynamicFOV = true,
+            AimPoint = "Selected", -- Selected | Closest | Random
+            AimParts = { "Head" },
+            VisibleFallback = true,
+            TargetAI = false,
+            Wallbang = false,
+            WallbangMaxWalls = 2,
+            WallbangMaxThickness = 3.0,
+            WallbangRespectNoPen = true,
+            AddFriendKey = Enum.UserInputType.MouseButton3 :: BindValue,
+            RaycastBudget = 6,
+        },
         WeaponMods = {
             NoRecoil = false,
             RecoilReduction = 100,
@@ -225,16 +239,6 @@ local function createDefaultConfig()
             FastADS = false,
             ADSSpeed = 0.12,
             NoScopeDOF = false,
-        },
-        Hitbox = {
-            Enabled = false,
-            Players = true,
-            AI = false,
-            Part = "FaceHitBox", -- FaceHitBox | HeadTopHitBox | Head | HumanoidRootPart
-            Size = 3.2,
-            Transparency = 0.65,
-            TeamCheck = true,
-            IgnoreDowned = true,
         },
         TriggerBot = {
             Enabled = false,
@@ -396,7 +400,7 @@ local function formatBindName(bind: any): string
     elseif bind == Enum.UserInputType.MouseButton2 then
         return "RMB"
     elseif bind == Enum.UserInputType.MouseButton3 then
-        return "MMB"
+        return "MB3"
     end
     local name = bind.Name
     if name == "RightControl" then
@@ -591,8 +595,21 @@ function Delta.IsPlayerProtected(player: Player, model: Model?): boolean
     return false
 end
 
+local FriendsWhitelist: { [number]: boolean } = {}
+
+function Delta.IsFriend(player: Player): boolean
+    return FriendsWhitelist[player.UserId] == true
+end
+
+function Delta.ClearFriends()
+    table.clear(FriendsWhitelist)
+end
+
 function Delta.IsTeammate(player: Player): boolean
     if player == LocalPlayer then
+        return true
+    end
+    if FriendsWhitelist[player.UserId] then
         return true
     end
     if LocalPlayer.Team ~= nil and player.Team == LocalPlayer.Team then
@@ -870,6 +887,8 @@ local HITPART_CANDIDATES: { [string]: { string } } = {
 }
 
 local CLOSEST_SCAN_PARTS = { "FaceHitBox", "Head", "UpperTorso", "LowerTorso", "HumanoidRootPart" }
+local FALLBACK_SCAN_PARTS = { "Head", "FaceHitBox", "UpperTorso", "LowerTorso", "HumanoidRootPart", "LeftUpperArm", "RightUpperArm", "LeftLowerLeg", "RightLowerLeg" }
+local TargetRng = Random.new()
 
 function Delta.ResolveTargetPart(model: Model, mode: string, refScreenPos: Vector2?, cam: Camera?): BasePart?
     if mode == "Closest" and cam and refScreenPos then
@@ -903,8 +922,101 @@ function Delta.ResolveTargetPart(model: Model, mode: string, refScreenPos: Vecto
     return model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")
 end
 
--- Visibility raycast matching Project Delta WeaponRay + PassThrough / Glass / NoCollision piercing
-function Delta.IsPartVisible(targetModel: Model, targetPart: BasePart, originPos: Vector3): boolean
+local function buildCandidateParts(
+    model: Model,
+    hitPart: string,
+    aimPoint: string?,
+    aimParts: { string }?,
+    visibleFallback: boolean?,
+    allowRandom: boolean?,
+    aim2D: Vector2,
+    cam: Camera
+): { BasePart }
+    local out: { BasePart } = {}
+    local seen: { [BasePart]: boolean } = {}
+    local function pushPart(p: BasePart?)
+        if p and p:IsA("BasePart") and not seen[p] then
+            seen[p] = true
+            table.insert(out, p)
+        end
+    end
+
+    local primary: { BasePart } = {}
+    local primarySeen: { [BasePart]: boolean } = {}
+    local useClosestScan = (hitPart == "Closest" and (not aimParts or #aimParts <= 1))
+    local sourceNames = useClosestScan and CLOSEST_SCAN_PARTS or (aimParts and #aimParts > 0 and aimParts or nil)
+
+    if sourceNames then
+        for _, name in ipairs(sourceNames) do
+            local p = model:FindFirstChild(name)
+            if p and p:IsA("BasePart") and not primarySeen[p] then
+                primarySeen[p] = true
+                table.insert(primary, p)
+            end
+        end
+    end
+
+    if #primary == 0 then
+        local resolved = Delta.ResolveTargetPart(model, hitPart, aim2D, cam)
+        if resolved then
+            table.insert(primary, resolved)
+        end
+    end
+
+    local ptMode = aimPoint or "Selected"
+    if (ptMode == "Closest" or useClosestScan) and #primary > 1 then
+        table.sort(primary, function(a, b)
+            local sa, oa = cam:WorldToViewportPoint(a.Position)
+            local sb, ob = cam:WorldToViewportPoint(b.Position)
+            local da = oa and (Vector2.new(sa.X, sa.Y) - aim2D).Magnitude or math.huge
+            local db = ob and (Vector2.new(sb.X, sb.Y) - aim2D).Magnitude or math.huge
+            return da < db
+        end)
+    elseif ptMode == "Random" and #primary > 1 then
+        if allowRandom then
+            for i = #primary, 2, -1 do
+                local j = TargetRng:NextInteger(1, i)
+                primary[i], primary[j] = primary[j], primary[i]
+            end
+        else
+            local idx = (math.floor(os.clock() * 2.5) % #primary) + 1
+            if idx ~= 1 then
+                primary[1], primary[idx] = primary[idx], primary[1]
+            end
+        end
+    end
+
+    for _, p in ipairs(primary) do
+        pushPart(p)
+    end
+
+    if visibleFallback then
+        for _, name in ipairs(FALLBACK_SCAN_PARTS) do
+            local p = model:FindFirstChild(name)
+            if p and p:IsA("BasePart") then
+                pushPart(p)
+            end
+        end
+    end
+
+    return out
+end
+
+export type WallbangConfig = {
+    Enabled: boolean,
+    MaxWalls: number,
+    MaxThickness: number,
+    RespectNoPen: boolean,
+}
+
+-- Visibility raycast matching Project Delta WeaponRay + PassThrough / Glass / NoCollision & Wallbang penetration
+function Delta.IsPartVisible(
+    targetModel: Model,
+    targetPart: BasePart,
+    originPos: Vector3,
+    wallbang: WallbangConfig?,
+    rayBudget: { Remaining: number }?
+): boolean
     local cam = Workspace.CurrentCamera
     local ignoreList: { Instance } = {}
     if LocalPlayer.Character then
@@ -925,15 +1037,27 @@ function Delta.IsPartVisible(targetModel: Model, targetPart: BasePart, originPos
         params.CollisionGroup = "WeaponRay"
     end)
 
+    local revParams = RaycastParams.new()
+    revParams.FilterType = Enum.RaycastFilterType.Include
+    revParams.IgnoreWater = true
+
     local currentOrigin = originPos
     local destination = targetPart.Position
+    local wallsUsed = 0
+    local totalThickness = 0
 
     for _ = 1, 12 do
-        params.FilterDescendantsInstances = ignoreList
         local deltaVec = destination - currentOrigin
         if deltaVec.Magnitude < 0.25 then
             return true
         end
+        if rayBudget then
+            if rayBudget.Remaining <= 0 then
+                return false
+            end
+            rayBudget.Remaining -= 1
+        end
+        params.FilterDescendantsInstances = ignoreList
         local res = Workspace:Raycast(currentOrigin, deltaVec, params)
         if not res then
             return true
@@ -952,6 +1076,40 @@ function Delta.IsPartVisible(targetModel: Model, targetPart: BasePart, originPos
         if isPassThrough then
             table.insert(ignoreList, hit)
             currentOrigin = res.Position + deltaVec.Unit * 0.06
+        elseif wallbang and wallbang.Enabled then
+            if wallbang.RespectNoPen and hit:GetAttribute("NoPen") == true then
+                return false
+            end
+            wallsUsed += 1
+            if wallsUsed > math.max(1, wallbang.MaxWalls) then
+                return false
+            end
+            local remainingThick = math.max(0.05, wallbang.MaxThickness - totalThickness)
+            if rayBudget then
+                if rayBudget.Remaining <= 0 then
+                    return false
+                end
+                rayBudget.Remaining -= 1
+            end
+            local dirUnit = deltaVec.Unit
+            local probeStart = res.Position + dirUnit * (remainingThick + 0.15)
+            revParams.FilterDescendantsInstances = { hit }
+            local exitRes = Workspace:Raycast(probeStart, res.Position - dirUnit * 0.05 - probeStart, revParams)
+            if not exitRes then
+                return false
+            end
+            local exitAlong = (exitRes.Position - res.Position):Dot(dirUnit)
+            local wallThick = math.max(0, exitAlong)
+            local targetAlong = (destination - res.Position):Dot(dirUnit)
+            if targetAlong <= wallThick and targetAlong <= remainingThick then
+                return true
+            end
+            totalThickness += wallThick
+            if totalThickness > wallbang.MaxThickness then
+                return false
+            end
+            table.insert(ignoreList, hit)
+            currentOrigin = exitRes.Position + dirUnit * 0.06
         else
             return false
         end
@@ -1199,8 +1357,8 @@ export type TargetResult = {
 }
 
 function Targeting.GetEffectiveFOVRadius(): number
-    local base = Config.Aimbot.FOVRadius
-    if not Config.Aimbot.FOVDynamic then
+    local base = Config.Targeting.FOV
+    if not Config.Targeting.DynamicFOV then
         return base
     end
     local cam = Workspace.CurrentCamera
@@ -1220,6 +1378,41 @@ function Targeting.GetAimOrigin2D(): Vector2
     return UserInputService:GetMouseLocation()
 end
 
+function Targeting.ToggleNearestFriend(): (Player?, boolean)
+    local cam = Workspace.CurrentCamera
+    if not cam then
+        return nil, false
+    end
+    local aim2D = Targeting.GetAimOrigin2D()
+    local maxPx = math.max(Targeting.GetEffectiveFOVRadius(), 220)
+    local bestPlayer: Player? = nil
+    local bestDist = maxPx
+
+    for model, entry in pairs(Actors) do
+        if model.Parent and not entry.IsAI and entry.Player and entry.Player ~= LocalPlayer then
+            local part = model:FindFirstChild("Head") or model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
+            if part and part:IsA("BasePart") then
+                local sp, onScreen = cam:WorldToViewportPoint(part.Position)
+                if onScreen then
+                    local sd = (Vector2.new(sp.X, sp.Y) - aim2D).Magnitude
+                    if sd < bestDist then
+                        bestDist = sd
+                        bestPlayer = entry.Player
+                    end
+                end
+            end
+        end
+    end
+
+    if not bestPlayer then
+        return nil, false
+    end
+    local uid = bestPlayer.UserId
+    local added = not (FriendsWhitelist[uid] == true)
+    FriendsWhitelist[uid] = added and true or nil
+    return bestPlayer, added
+end
+
 function Targeting.FindBestTarget(opts: {
     HitPart: string,
     TeamCheck: boolean,
@@ -1229,6 +1422,12 @@ function Targeting.FindBestTarget(opts: {
     UseFOV: boolean,
     MaxDistance: number,
     RayOrigin: Vector3?,
+    AimPoint: string?,
+    AimParts: { string }?,
+    VisibleFallback: boolean?,
+    Wallbang: WallbangConfig?,
+    RaycastBudget: number?,
+    AllowRandom: boolean?,
 }): TargetResult?
     local cam = Workspace.CurrentCamera
     if not cam then
@@ -1240,8 +1439,18 @@ function Targeting.FindBestTarget(opts: {
     local camPos = cam.CFrame.Position
     local visOrigin = opts.RayOrigin or camPos
 
-    local best: TargetResult? = nil
-    local bestScore = fovRadius
+    type CandidateRec = {
+        Model: Model,
+        Entry: ActorEntry,
+        Parts: { BasePart },
+        PrimaryPart: BasePart,
+        ScreenPos: Vector2,
+        ScreenDist: number,
+        WorldDist: number,
+        Health: number,
+        MaxHealth: number,
+    }
+    local candidates: { CandidateRec } = {}
 
     for model, entry in pairs(Actors) do
         if not model.Parent then
@@ -1267,137 +1476,107 @@ function Targeting.FindBestTarget(opts: {
             continue
         end
 
-        local part = Delta.ResolveTargetPart(model, opts.HitPart, aim2D, cam)
-        if not part then
+        local parts = buildCandidateParts(model, opts.HitPart, opts.AimPoint, opts.AimParts, opts.VisibleFallback, opts.AllowRandom, aim2D, cam)
+        local primary = parts[1]
+        if not primary then
             continue
         end
 
-        local worldDist = (part.Position - camPos).Magnitude
+        local worldDist = (primary.Position - camPos).Magnitude
         if worldDist > opts.MaxDistance then
             continue
         end
 
-        local screenPos, onScreen = cam:WorldToViewportPoint(part.Position)
+        local screenPos, onScreen = cam:WorldToViewportPoint(primary.Position)
         if not onScreen then
             continue
         end
 
         local pt2D = Vector2.new(screenPos.X, screenPos.Y)
         local screenDist = (pt2D - aim2D).Magnitude
-        if screenDist > bestScore then
+        if screenDist > fovRadius then
             continue
         end
 
-        if opts.VisibleCheck and not Delta.IsPartVisible(model, part, visOrigin) then
-            continue
-        end
-
-        bestScore = screenDist
-        best = {
+        table.insert(candidates, {
             Model = model,
-            Player = entry.Player,
-            IsAI = entry.IsAI,
-            Part = part,
+            Entry = entry,
+            Parts = parts,
+            PrimaryPart = primary,
             ScreenPos = pt2D,
             ScreenDist = screenDist,
             WorldDist = worldDist,
             Health = hum.Health,
             MaxHealth = math.max(hum.MaxHealth, 1),
-        }
+        })
     end
 
-    return best
+    if #candidates == 0 then
+        return nil
+    end
+
+    table.sort(candidates, function(a, b)
+        return a.ScreenDist < b.ScreenDist
+    end)
+
+    local budget = { Remaining = math.max(1, opts.RaycastBudget or Config.Targeting.RaycastBudget or 6) }
+    for _, cand in ipairs(candidates) do
+        if not opts.VisibleCheck then
+            return {
+                Model = cand.Model,
+                Player = cand.Entry.Player,
+                IsAI = cand.Entry.IsAI,
+                Part = cand.PrimaryPart,
+                ScreenPos = cand.ScreenPos,
+                ScreenDist = cand.ScreenDist,
+                WorldDist = cand.WorldDist,
+                Health = cand.Health,
+                MaxHealth = cand.MaxHealth,
+            }
+        end
+
+        for idx, part in ipairs(cand.Parts) do
+            if budget.Remaining <= 0 then
+                break
+            end
+            if idx > 1 and not opts.VisibleFallback and opts.AimPoint ~= "Random" then
+                break
+            end
+            if Delta.IsPartVisible(cand.Model, part, visOrigin, opts.Wallbang, budget) then
+                local sp, onScr = cam:WorldToViewportPoint(part.Position)
+                local p2d = onScr and Vector2.new(sp.X, sp.Y) or cand.ScreenPos
+                local sd = onScr and (p2d - aim2D).Magnitude or cand.ScreenDist
+                if not opts.UseFOV or sd <= fovRadius then
+                    return {
+                        Model = cand.Model,
+                        Player = cand.Entry.Player,
+                        IsAI = cand.Entry.IsAI,
+                        Part = part,
+                        ScreenPos = p2d,
+                        ScreenDist = sd,
+                        WorldDist = (part.Position - camPos).Magnitude,
+                        Health = cand.Health,
+                        MaxHealth = cand.MaxHealth,
+                    }
+                end
+            end
+        end
+
+        if budget.Remaining <= 0 then
+            break
+        end
+    end
+
+    return nil
 end
 
 -- ============================================================================
--- 6. COMBAT SUBSYSTEMS (AIMBOT, SILENT AIM, WEAPON MODS, HITBOX, TRIGGERBOT)
+-- 6. COMBAT SUBSYSTEMS (AIMBOT, SILENT AIM, WEAPON MODS, TRIGGERBOT)
 -- ============================================================================
 local Combat = {}
 local ActiveLockedTarget: TargetResult? = nil
 
--- 6A. Hitbox Expander with full state backup/restore
-local HitboxBackups: { [BasePart]: { Size: Vector3, Transparency: number, CanCollide: boolean, Massless: boolean } } = {}
-
-local function restoreSingleHitbox(part: BasePart)
-    local b = HitboxBackups[part]
-    if not b then
-        return
-    end
-    HitboxBackups[part] = nil
-    pcall(function()
-        if part.Parent then
-            part.Size = b.Size
-            part.Transparency = b.Transparency
-            part.CanCollide = b.CanCollide
-            part.Massless = b.Massless
-        end
-    end)
-end
-
-function Combat.RestoreAllHitboxes()
-    for part in pairs(HitboxBackups) do
-        restoreSingleHitbox(part)
-    end
-end
-
-local function updateHitboxExpander()
-    if not Config.Hitbox.Enabled then
-        if next(HitboxBackups) ~= nil then
-            Combat.RestoreAllHitboxes()
-        end
-        return
-    end
-
-    local desiredParts: { [BasePart]: boolean } = {}
-    local sz = Config.Hitbox.Size
-    local newSize = Vector3.new(sz, sz, sz)
-
-    for model, entry in pairs(Actors) do
-        if not model.Parent then
-            continue
-        end
-        local validKind = (entry.IsAI and Config.Hitbox.AI) or (not entry.IsAI and Config.Hitbox.Players)
-        if not validKind then
-            continue
-        end
-        if entry.Player then
-            if Config.Hitbox.TeamCheck and Delta.IsTeammate(entry.Player) then
-                continue
-            end
-            if Config.Hitbox.IgnoreDowned and Delta.IsPlayerDowned(entry.Player, model) then
-                continue
-            end
-        end
-        local hum = model:FindFirstChildOfClass("Humanoid")
-        if not hum or hum.Health <= 0 then
-            continue
-        end
-        local part = Delta.ResolveTargetPart(model, Config.Hitbox.Part, nil, nil)
-        if part and (part.Name == Config.Hitbox.Part or part.Name ~= "HumanoidRootPart") then
-            desiredParts[part] = true
-            if not HitboxBackups[part] then
-                HitboxBackups[part] = {
-                    Size = part.Size,
-                    Transparency = part.Transparency,
-                    CanCollide = part.CanCollide,
-                    Massless = part.Massless,
-                }
-            end
-            part.Size = newSize
-            part.Transparency = Config.Hitbox.Transparency
-            part.CanCollide = false
-            part.Massless = true
-        end
-    end
-
-    for part in pairs(HitboxBackups) do
-        if not desiredParts[part] or not part.Parent then
-            restoreSingleHitbox(part)
-        end
-    end
-end
-
--- 6B. Weapon Mods (No Recoil, No Spread, No Sway, Fast ADS, No Scope DOF)
+-- 6A. Weapon Mods (No Recoil, No Spread, No Sway, Fast ADS, No Scope DOF)
 local OriginalRecoilPattern: { [NumberValue]: number } = {}
 local OriginalWeaponSettings: { [table]: { [string]: any } } = {}
 local CachedSettingsModules: { table } = {}
@@ -1609,16 +1788,27 @@ end
 -- 6C. Silent Aim hook on Bullet.CreateBullet
 local SilentRng = Random.new()
 
-local function findSilentAimTarget(shotOrigin: Vector3): TargetResult?
+local function findSilentAimTarget(shotOrigin: Vector3, allowRandom: boolean?): TargetResult?
     return Targeting.FindBestTarget({
         HitPart = Config.SilentAim.HitPart,
         TeamCheck = Config.SilentAim.TeamCheck,
         VisibleCheck = Config.SilentAim.VisibleCheck,
         IgnoreDowned = Config.SilentAim.IgnoreDowned,
-        TargetAI = Config.SilentAim.TargetAI,
+        TargetAI = Config.Targeting.TargetAI,
         UseFOV = Config.SilentAim.UseFOV,
         MaxDistance = 4000, -- Project Delta Bullet.onStep max range
         RayOrigin = shotOrigin,
+        AimPoint = Config.Targeting.AimPoint,
+        AimParts = Config.Targeting.AimParts,
+        VisibleFallback = Config.Targeting.VisibleFallback,
+        Wallbang = {
+            Enabled = Config.Targeting.Wallbang,
+            MaxWalls = Config.Targeting.WallbangMaxWalls,
+            MaxThickness = Config.Targeting.WallbangMaxThickness,
+            RespectNoPen = Config.Targeting.WallbangRespectNoPen,
+        },
+        RaycastBudget = Config.Targeting.RaycastBudget,
+        AllowRandom = allowRandom == true,
     })
 end
 
@@ -1640,7 +1830,7 @@ do
                 local chance = math.clamp(Config.SilentAim.HitChance, 0, 100)
                 if chance >= 100 or SilentRng:NextInteger(1, 100) <= chance then
                     local shotOrigin = Delta.GetShotOrigin()
-                    local target = findSilentAimTarget(shotOrigin)
+                    local target = findSilentAimTarget(shotOrigin, true)
 
                     if target then
                         local ammoArg = (args.n >= 7 and type(args[7]) == "string") and args[7] or nil
@@ -2920,7 +3110,6 @@ end
 Session.Bind(Workspace.ChildAdded, hookWorkspaceFolder)
 
 Session.OnStop(function()
-    Combat.RestoreAllHitboxes()
     Combat.RestoreAllWeaponMods()
     World.RestoreAll()
     for _, entry in pairs(Actors) do
@@ -3745,6 +3934,154 @@ function UI.AddDropdown(sec: Frame, label: string, options: { string }, getter: 
     end)
 end
 
+function UI.AddMultiDropdown(sec: Frame, label: string, options: { string }, getter: () -> { string }, setter: ({ string }) -> ())
+    local holder = Instance.new("Frame")
+    holder.Size = UDim2.new(1, 0, 0, 26)
+    holder.BackgroundTransparency = 1
+    holder.Parent = sec
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(0.48, 0, 1, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextSize = 12
+    lbl.TextColor3 = THEME.TextPrimary
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Text = label
+    lbl.Parent = holder
+
+    local btn = Instance.new("TextButton")
+    btn.AnchorPoint = Vector2.new(1, 0.5)
+    btn.Position = UDim2.new(1, 0, 0.5, 0)
+    btn.Size = UDim2.new(0.5, 0, 0, 24)
+    btn.BackgroundColor3 = THEME.BgControl
+    btn.Font = Enum.Font.GothamMedium
+    btn.TextSize = 11
+    btn.TextColor3 = THEME.TextPrimary
+    btn.TextTruncate = Enum.TextTruncate.AtEnd
+    btn.AutoButtonColor = false
+    btn.Parent = holder
+    addCorner(btn, 6)
+    addStroke(btn, THEME.Border, 1, 0.2)
+
+    local function formatSelected(sel: { string }): string
+        if #sel == 0 then
+            return "None  v"
+        elseif #sel == 1 then
+            return sel[1] .. "  v"
+        end
+        return string.format("%s +%d  v", sel[1], #sel - 1)
+    end
+
+    local function sync()
+        btn.Text = formatSelected(getter())
+    end
+    sync()
+    table.insert(UI._Refreshers, sync)
+
+    Session.Bind(btn.MouseButton1Click, function()
+        if ActivePopup then
+            closeActivePopup()
+            return
+        end
+        IgnoreNextPopupDismiss = true
+        local h = math.min(#options * 26 + 8, 224)
+        local layerSize = PopupLayer.AbsoluteSize
+        local x = math.min(btn.AbsolutePosition.X, math.max(8, layerSize.X - btn.AbsoluteSize.X - 8))
+        local y = btn.AbsolutePosition.Y + btn.AbsoluteSize.Y + 4
+        if layerSize.Y > 0 and y + h > layerSize.Y - 8 then
+            y = math.max(8, btn.AbsolutePosition.Y - h - 4)
+        end
+
+        local menu = Instance.new("Frame")
+        menu.Position = UDim2.fromOffset(x, y)
+        menu.Size = UDim2.fromOffset(btn.AbsoluteSize.X, h)
+        menu.BackgroundColor3 = THEME.BgSidebar
+        menu.ZIndex = 65
+        menu.Parent = PopupLayer
+        addCorner(menu, 7)
+        addStroke(menu, THEME.Accent, 1, 0.45)
+
+        local list = Instance.new("UIListLayout")
+        list.Padding = UDim.new(0, 2)
+        list.Parent = menu
+        local pad = Instance.new("UIPadding")
+        pad.PaddingTop = UDim.new(0, 4)
+        pad.PaddingLeft = UDim.new(0, 4)
+        pad.PaddingRight = UDim.new(0, 4)
+        pad.Parent = menu
+
+        local rows: { { Opt: string, Btn: TextButton, Check: TextLabel } } = {}
+        local function refreshRows()
+            local set: { [string]: boolean } = {}
+            for _, v in ipairs(getter()) do
+                set[v] = true
+            end
+            for _, rec in ipairs(rows) do
+                local on = set[rec.Opt] == true
+                rec.Btn.BackgroundColor3 = on and THEME.BgHover or THEME.BgSidebar
+                rec.Btn.TextColor3 = on and THEME.Accent or THEME.TextPrimary
+                rec.Check.Text = on and "x" or ""
+                rec.Check.TextColor3 = THEME.Accent
+            end
+        end
+
+        for _, opt in ipairs(options) do
+            local ob = Instance.new("TextButton")
+            ob.Size = UDim2.new(1, 0, 0, 24)
+            ob.BackgroundColor3 = THEME.BgSidebar
+            ob.Font = Enum.Font.GothamMedium
+            ob.TextSize = 11
+            ob.TextColor3 = THEME.TextPrimary
+            ob.Text = "  " .. opt
+            ob.TextXAlignment = Enum.TextXAlignment.Left
+            ob.AutoButtonColor = false
+            ob.ZIndex = 66
+            ob.Parent = menu
+            addCorner(ob, 5)
+
+            local chk = Instance.new("TextLabel")
+            chk.AnchorPoint = Vector2.new(1, 0.5)
+            chk.Position = UDim2.new(1, -6, 0.5, 0)
+            chk.Size = UDim2.fromOffset(14, 14)
+            chk.BackgroundTransparency = 1
+            chk.Font = Enum.Font.GothamBold
+            chk.TextSize = 11
+            chk.ZIndex = 67
+            chk.Parent = ob
+
+            table.insert(rows, { Opt = opt, Btn = ob, Check = chk })
+            ob.MouseButton1Click:Connect(function()
+                local set: { [string]: boolean } = {}
+                local curCount = 0
+                for _, v in ipairs(getter()) do
+                    if not set[v] then
+                        set[v] = true
+                        curCount += 1
+                    end
+                end
+                if set[opt] and curCount <= 1 then
+                    return
+                end
+                set[opt] = not set[opt]
+                local nextList: { string } = {}
+                for _, candidate in ipairs(options) do
+                    if set[candidate] then
+                        table.insert(nextList, candidate)
+                    end
+                end
+                setter(nextList)
+                sync()
+                refreshRows()
+                UI.NotifyChange()
+            end)
+        end
+
+        refreshRows()
+        ActivePopup = menu
+    end)
+end
+
 function UI.AddColorPicker(sec: Frame, label: string, getter: () -> Color3, setter: (Color3) -> ())
     local row = Instance.new("Frame")
     row.Size = UDim2.new(1, 0, 0, 24)
@@ -3985,6 +4322,274 @@ function UI.AddEspCategoryRow(sec: Frame, label: string, getter: () -> boolean, 
     end)
 end
 
+function UI.AddToggleWithConfig(
+    sec: Frame,
+    label: string,
+    getter: () -> boolean,
+    setter: (boolean) -> (),
+    buildPopover: (pop: Frame, anchorBtn: TextButton) -> ()
+)
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, 0, 0, 24)
+    row.BackgroundTransparency = 1
+    row.Parent = sec
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -76, 1, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextSize = 12
+    lbl.TextColor3 = THEME.TextPrimary
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Text = label
+    lbl.Parent = row
+
+    local gearBtn = Instance.new("TextButton")
+    gearBtn.AnchorPoint = Vector2.new(1, 0.5)
+    gearBtn.Position = UDim2.new(1, -44, 0.5, 0)
+    gearBtn.Size = UDim2.fromOffset(22, 20)
+    gearBtn.BackgroundColor3 = THEME.BgControl
+    gearBtn.BackgroundTransparency = 1
+    gearBtn.Text = ""
+    gearBtn.AutoButtonColor = false
+    gearBtn.Parent = row
+    addCorner(gearBtn, 5)
+    local glyphParts = buildSlidersGlyph(gearBtn)
+
+    local track = Instance.new("TextButton")
+    track.AnchorPoint = Vector2.new(1, 0.5)
+    track.Position = UDim2.new(1, 0, 0.5, 0)
+    track.Size = UDim2.fromOffset(38, 20)
+    track.Text = ""
+    track.AutoButtonColor = false
+    track.Parent = row
+    addCorner(track, 10)
+
+    local knob = Instance.new("Frame")
+    knob.AnchorPoint = Vector2.new(0, 0.5)
+    knob.Size = UDim2.fromOffset(14, 14)
+    knob.BackgroundColor3 = Color3.new(1, 1, 1)
+    knob.BorderSizePixel = 0
+    knob.Parent = track
+    addCorner(knob, 7)
+
+    local function sync(instant: boolean?)
+        local on = getter()
+        local tCol = on and THEME.Accent or THEME.BgControl
+        local kPos = on and UDim2.new(1, -17, 0.5, 0) or UDim2.new(0, 3, 0.5, 0)
+        if instant then
+            track.BackgroundColor3 = tCol
+            knob.Position = kPos
+        else
+            quickTween(track, { BackgroundColor3 = tCol }, 0.14)
+            quickTween(knob, { Position = kPos }, 0.14)
+        end
+        for _, p in ipairs(glyphParts) do
+            p.BackgroundColor3 = THEME.TextSecondary
+        end
+    end
+    sync(true)
+    table.insert(UI._Refreshers, function()
+        sync(true)
+    end)
+
+    Session.Bind(track.MouseButton1Click, function()
+        setter(not getter())
+        sync(false)
+        UI.NotifyChange()
+    end)
+
+    Session.Bind(gearBtn.MouseButton1Click, function()
+        if ActivePopup then
+            closeActivePopup()
+            return
+        end
+        IgnoreNextPopupDismiss = true
+        local pop = Instance.new("Frame")
+        pop.Size = UDim2.fromOffset(224, 128)
+        pop.BackgroundColor3 = THEME.BgSidebar
+        pop.ZIndex = 65
+        pop.Parent = PopupLayer
+        addCorner(pop, 8)
+        addStroke(pop, THEME.Accent, 1, 0.45)
+
+        local pad = Instance.new("UIPadding")
+        pad.PaddingTop = UDim.new(0, 8)
+        pad.PaddingBottom = UDim.new(0, 8)
+        pad.PaddingLeft = UDim.new(0, 10)
+        pad.PaddingRight = UDim.new(0, 10)
+        pad.Parent = pop
+
+        local layout = Instance.new("UIListLayout")
+        layout.Padding = UDim.new(0, 6)
+        layout.Parent = pop
+
+        buildPopover(pop, gearBtn)
+
+        local layerSize = PopupLayer.AbsoluteSize
+        local pw, ph = pop.Size.X.Offset, pop.Size.Y.Offset
+        local px = math.clamp(gearBtn.AbsolutePosition.X - pw + 26, 8, math.max(8, layerSize.X - pw - 8))
+        local py = gearBtn.AbsolutePosition.Y + 24
+        if layerSize.Y > 0 and py + ph > layerSize.Y - 8 then
+            py = math.max(8, gearBtn.AbsolutePosition.Y - ph - 4)
+        end
+        pop.Position = UDim2.fromOffset(px, py)
+        ActivePopup = pop
+    end)
+end
+
+local function addPopupSlider(pop: Frame, label: string, minVal: number, maxVal: number, step: number, suffix: string, getter: () -> number, setter: (number) -> ())
+    local holder = Instance.new("Frame")
+    holder.Size = UDim2.new(1, 0, 0, 32)
+    holder.BackgroundTransparency = 1
+    holder.ZIndex = 66
+    holder.Parent = pop
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(0.65, 0, 0, 15)
+    lbl.BackgroundTransparency = 1
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextSize = 11
+    lbl.TextColor3 = THEME.TextPrimary
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Text = label
+    lbl.ZIndex = 66
+    lbl.Parent = holder
+
+    local valLbl = Instance.new("TextLabel")
+    valLbl.AnchorPoint = Vector2.new(1, 0)
+    valLbl.Position = UDim2.new(1, 0, 0, 0)
+    valLbl.Size = UDim2.new(0.35, 0, 0, 15)
+    valLbl.BackgroundTransparency = 1
+    valLbl.Font = Enum.Font.GothamMedium
+    valLbl.TextSize = 11
+    valLbl.TextColor3 = THEME.Accent
+    valLbl.TextXAlignment = Enum.TextXAlignment.Right
+    valLbl.ZIndex = 66
+    valLbl.Parent = holder
+
+    local bar = Instance.new("TextButton")
+    bar.Position = UDim2.fromOffset(0, 19)
+    bar.Size = UDim2.new(1, 0, 0, 7)
+    bar.BackgroundColor3 = THEME.BgControl
+    bar.Text = ""
+    bar.AutoButtonColor = false
+    bar.ZIndex = 66
+    bar.Parent = holder
+    addCorner(bar, 4)
+
+    local fill = Instance.new("Frame")
+    fill.Size = UDim2.fromScale(0, 1)
+    fill.BackgroundColor3 = THEME.Accent
+    fill.BorderSizePixel = 0
+    fill.ZIndex = 67
+    fill.Parent = bar
+    addCorner(fill, 4)
+
+    local function sync()
+        local v = math.clamp(getter(), minVal, maxVal)
+        local ratio = (v - minVal) / math.max(maxVal - minVal, 0.0001)
+        fill.Size = UDim2.fromScale(math.clamp(ratio, 0, 1), 1)
+        if step < 1 then
+            valLbl.Text = string.format("%.1f%s", v, suffix)
+        else
+            valLbl.Text = string.format("%.0f%s", v, suffix)
+        end
+    end
+    sync()
+
+    local sliding = false
+    local function applyX(xPos: number)
+        local w = math.max(bar.AbsoluteSize.X, 1)
+        local ratio = math.clamp((xPos - bar.AbsolutePosition.X) / w, 0, 1)
+        local raw = minVal + (maxVal - minVal) * ratio
+        local snapped = math.floor(raw / step + 0.5) * step
+        snapped = math.clamp(tonumber(string.format("%.4f", snapped)) or raw, minVal, maxVal)
+        setter(snapped)
+        sync()
+        UI.NotifyChange()
+    end
+
+    bar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            sliding = true
+            applyX(input.Position.X)
+        end
+    end)
+    local cMove = UserInputService.InputChanged:Connect(function(input)
+        if sliding and pop.Parent and input.UserInputType == Enum.UserInputType.MouseMovement then
+            applyX(input.Position.X)
+        end
+    end)
+    local cEnd = UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            sliding = false
+        end
+    end)
+    pop.Destroying:Connect(function()
+        cMove:Disconnect()
+        cEnd:Disconnect()
+    end)
+end
+
+local function addPopupToggle(pop: Frame, label: string, getter: () -> boolean, setter: (boolean) -> ())
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, 0, 0, 22)
+    row.BackgroundTransparency = 1
+    row.ZIndex = 66
+    row.Parent = pop
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -44, 1, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextSize = 11
+    lbl.TextColor3 = THEME.TextPrimary
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Text = label
+    lbl.ZIndex = 66
+    lbl.Parent = row
+
+    local track = Instance.new("TextButton")
+    track.AnchorPoint = Vector2.new(1, 0.5)
+    track.Position = UDim2.new(1, 0, 0.5, 0)
+    track.Size = UDim2.fromOffset(36, 18)
+    track.Text = ""
+    track.AutoButtonColor = false
+    track.ZIndex = 66
+    track.Parent = row
+    addCorner(track, 9)
+
+    local knob = Instance.new("Frame")
+    knob.AnchorPoint = Vector2.new(0, 0.5)
+    knob.Size = UDim2.fromOffset(12, 12)
+    knob.BackgroundColor3 = Color3.new(1, 1, 1)
+    knob.BorderSizePixel = 0
+    knob.ZIndex = 67
+    knob.Parent = track
+    addCorner(knob, 6)
+
+    local function sync(instant: boolean?)
+        local on = getter()
+        local tCol = on and THEME.Accent or THEME.BgControl
+        local kPos = on and UDim2.new(1, -15, 0.5, 0) or UDim2.new(0, 3, 0.5, 0)
+        if instant then
+            track.BackgroundColor3 = tCol
+            knob.Position = kPos
+        else
+            quickTween(track, { BackgroundColor3 = tCol }, 0.14)
+            quickTween(knob, { Position = kPos }, 0.14)
+        end
+    end
+    sync(true)
+
+    track.MouseButton1Click:Connect(function()
+        setter(not getter())
+        sync(false)
+        UI.NotifyChange()
+    end)
+end
+
 -- ============================================================================
 -- 10. POPULATE TABS (COMBAT, VISUALS, SETTINGS ONLY)
 -- ============================================================================
@@ -4013,8 +4618,18 @@ do
 
     local secFov = UI.AddSection(CombatTab, "Left", "FOV Circle")
     UI.AddToggle(secFov, "Show FOV Circle", function() return Config.Aimbot.ShowFOV end, function(v) Config.Aimbot.ShowFOV = v end)
-    UI.AddSlider(secFov, "FOV Radius", 25, 500, 5, "px", function() return Config.Aimbot.FOVRadius end, function(v) Config.Aimbot.FOVRadius = v end)
-    UI.AddToggle(secFov, "Scale With Zoom", function() return Config.Aimbot.FOVDynamic end, function(v) Config.Aimbot.FOVDynamic = v end)
+    UI.AddSlider(secFov, "FOV Radius", 25, 500, 5, "px", function() return Config.Targeting.FOV end, function(v)
+        if v ~= Config.Targeting.FOV then
+            Config.Targeting.FOV = v
+            Config.Aimbot.FOVRadius = v
+            UI.RefreshAll()
+        end
+    end)
+    UI.AddToggle(secFov, "Scale With Zoom", function() return Config.Targeting.DynamicFOV end, function(v)
+        Config.Targeting.DynamicFOV = v
+        Config.Aimbot.FOVDynamic = v
+        UI.RefreshAll()
+    end)
     UI.AddToggle(secFov, "Filled Circle", function() return Config.Aimbot.FOVFilled end, function(v) Config.Aimbot.FOVFilled = v end)
     UI.AddColorPicker(secFov, "FOV Color", function() return Config.Aimbot.FOVColor end, function(c) Config.Aimbot.FOVColor = c end)
 
@@ -4031,14 +4646,95 @@ do
             ToggleStates.SilentAim = true
         end
     end)
-    UI.AddDropdown(secSilent, "Target Hitbox", { "FaceHitBox", "Head", "HeadTopHitBox", "UpperTorso", "HumanoidRootPart", "Closest" },
-        function() return Config.SilentAim.HitPart end, function(v) Config.SilentAim.HitPart = v end)
+    UI.AddDropdown(secSilent, "Target Hitbox", { "Head", "FaceHitBox", "HeadTopHitBox", "UpperTorso", "HumanoidRootPart", "Closest" },
+        function() return Config.SilentAim.HitPart end, function(v)
+            Config.SilentAim.HitPart = v
+            if v == "Closest" then
+                Config.Targeting.AimPoint = "Closest"
+            else
+                Config.Targeting.AimParts = { v }
+                if Config.Targeting.AimPoint == "Closest" then
+                    Config.Targeting.AimPoint = "Selected"
+                end
+            end
+            UI.RefreshAll()
+        end)
     UI.AddSlider(secSilent, "Hit Chance", 10, 100, 5, "%", function() return Config.SilentAim.HitChance end, function(v) Config.SilentAim.HitChance = v end)
     UI.AddToggle(secSilent, "Use FOV Circle", function() return Config.SilentAim.UseFOV end, function(v) Config.SilentAim.UseFOV = v end)
     UI.AddToggle(secSilent, "Team / Clan Check", function() return Config.SilentAim.TeamCheck end, function(v) Config.SilentAim.TeamCheck = v end)
     UI.AddToggle(secSilent, "Wall Check", function() return Config.SilentAim.VisibleCheck end, function(v) Config.SilentAim.VisibleCheck = v end)
-    UI.AddToggle(secSilent, "Target AI / Bots", function() return Config.SilentAim.TargetAI end, function(v) Config.SilentAim.TargetAI = v end)
+    UI.AddToggle(secSilent, "Target AI / Bots", function() return Config.Targeting.TargetAI end, function(v)
+        Config.Targeting.TargetAI = v
+        Config.SilentAim.TargetAI = v
+        UI.RefreshAll()
+    end)
     UI.AddToggle(secSilent, "Ballistic Prediction", function() return Config.SilentAim.Prediction end, function(v) Config.SilentAim.Prediction = v end)
+
+    local secTargeting = UI.AddSection(CombatTab, "Right", "Targeting")
+    UI.AddSlider(secTargeting, "FOV", 25, 500, 5, "", function() return Config.Targeting.FOV end, function(v)
+        if v ~= Config.Targeting.FOV then
+            Config.Targeting.FOV = v
+            Config.Aimbot.FOVRadius = v
+            UI.RefreshAll()
+        end
+    end)
+    UI.AddToggle(secTargeting, "Dynamic FOV", function() return Config.Targeting.DynamicFOV end, function(v)
+        Config.Targeting.DynamicFOV = v
+        Config.Aimbot.FOVDynamic = v
+        UI.RefreshAll()
+    end)
+    UI.AddDropdown(secTargeting, "Aim Point", { "Selected", "Closest", "Random" }, function() return Config.Targeting.AimPoint end, function(v)
+        Config.Targeting.AimPoint = v
+        if v == "Closest" then
+            Config.SilentAim.HitPart = "Closest"
+        else
+            Config.SilentAim.HitPart = Config.Targeting.AimParts[1] or "Head"
+        end
+        UI.RefreshAll()
+    end)
+    UI.AddMultiDropdown(secTargeting, "Aim Parts", {
+        "Head",
+        "FaceHitBox",
+        "HeadTopHitBox",
+        "UpperTorso",
+        "LowerTorso",
+        "HumanoidRootPart",
+        "LeftUpperArm",
+        "RightUpperArm",
+    }, function() return Config.Targeting.AimParts end, function(partsList)
+        Config.Targeting.AimParts = partsList
+        if Config.Targeting.AimPoint ~= "Closest" then
+            Config.SilentAim.HitPart = partsList[1] or "Head"
+        end
+        UI.RefreshAll()
+    end)
+    UI.AddToggle(secTargeting, "Visible Fallback", function() return Config.Targeting.VisibleFallback end, function(v)
+        Config.Targeting.VisibleFallback = v
+    end)
+    UI.AddToggle(secTargeting, "Target AI", function() return Config.Targeting.TargetAI end, function(v)
+        Config.Targeting.TargetAI = v
+        Config.SilentAim.TargetAI = v
+        UI.RefreshAll()
+    end)
+    UI.AddToggleWithConfig(secTargeting, "Wallbang", function() return Config.Targeting.Wallbang end, function(v)
+        Config.Targeting.Wallbang = v
+    end, function(pop)
+        addPopupSlider(pop, "Max Walls", 1, 4, 1, "", function() return Config.Targeting.WallbangMaxWalls end, function(v)
+            Config.Targeting.WallbangMaxWalls = v
+        end)
+        addPopupSlider(pop, "Max Thickness", 0.5, 8.0, 0.5, "st", function() return Config.Targeting.WallbangMaxThickness end, function(v)
+            Config.Targeting.WallbangMaxThickness = v
+        end)
+        addPopupToggle(pop, "Respect NoPen", function() return Config.Targeting.WallbangRespectNoPen end, function(v)
+            Config.Targeting.WallbangRespectNoPen = v
+        end)
+    end)
+    UI.AddKeybindRow(secTargeting, "Add Friend", function() return Config.Targeting.AddFriendKey end, function(k)
+        Config.Targeting.AddFriendKey = k
+    end)
+    UI.AddSlider(secTargeting, "Raycast Budget", 1, 16, 1, "", function() return Config.Targeting.RaycastBudget end, function(v)
+        Config.Targeting.RaycastBudget = v
+    end)
 
     local secWep = UI.AddSection(CombatTab, "Right", "Weapon Mods")
     UI.AddToggle(secWep, "No Recoil", function() return Config.WeaponMods.NoRecoil end, function(v)
@@ -4065,16 +4761,6 @@ do
         Config.WeaponMods.NoScopeDOF = v
         Combat.ApplyWeaponMods()
     end)
-
-    local secHitbox = UI.AddSection(CombatTab, "Right", "Hitbox Expander")
-    UI.AddToggle(secHitbox, "Expand Hitboxes", function() return Config.Hitbox.Enabled end, function(v) Config.Hitbox.Enabled = v end)
-    UI.AddDropdown(secHitbox, "Expand Part", { "FaceHitBox", "HeadTopHitBox", "Head", "HumanoidRootPart" },
-        function() return Config.Hitbox.Part end, function(v) Config.Hitbox.Part = v end)
-    UI.AddSlider(secHitbox, "Hitbox Size", 1.2, 8.0, 0.2, "st", function() return Config.Hitbox.Size end, function(v) Config.Hitbox.Size = v end)
-    UI.AddSlider(secHitbox, "Transparency", 0, 1, 0.05, "", function() return Config.Hitbox.Transparency end, function(v) Config.Hitbox.Transparency = v end)
-    UI.AddToggle(secHitbox, "Expand Players", function() return Config.Hitbox.Players end, function(v) Config.Hitbox.Players = v end)
-    UI.AddToggle(secHitbox, "Expand AI / Bots", function() return Config.Hitbox.AI end, function(v) Config.Hitbox.AI = v end)
-    UI.AddToggle(secHitbox, "Team Check", function() return Config.Hitbox.TeamCheck end, function(v) Config.Hitbox.TeamCheck = v end)
 
     local secTrig = UI.AddSection(CombatTab, "Left", "TriggerBot")
     UI.AddToggle(secTrig, "Enable TriggerBot", function() return Config.TriggerBot.Enabled end, function(v) Config.TriggerBot.Enabled = v end,
@@ -4300,18 +4986,16 @@ do
     UI.AddSlider(secUI, "ESP Font Size", 10, 18, 1, "px", function() return Config.Settings.FontSize end, function(v) Config.Settings.FontSize = v end)
 
     local secSess = UI.AddSection(SettingsTab, "Right", "Session Control")
-    UI.AddButton(secSess, "Restore World & Hitboxes", "normal", function()
-        Config.Hitbox.Enabled = false
+    UI.AddButton(secSess, "Restore World & Weapons", "normal", function()
         Config.WeaponMods.NoRecoil = false
         Config.WeaponMods.NoSpread = false
         Config.WeaponMods.NoSway = false
         Config.WeaponMods.FastADS = false
         Config.WeaponMods.NoScopeDOF = false
-        Combat.RestoreAllHitboxes()
         Combat.RestoreAllWeaponMods()
         World.RestoreAll()
         UI.RefreshAll()
-        UI.Notify("Restored", "World lighting, hitboxes and weapon stats restored.", "success")
+        UI.Notify("Restored", "World lighting and weapon stats restored.", "success")
     end)
     UI.AddButton(secSess, "Reset Default Config", "normal", function()
         local fresh = createDefaultConfig()
@@ -4319,7 +5003,7 @@ do
             Config[k] = v
         end
         table.clear(ToggleStates)
-        Combat.RestoreAllHitboxes()
+        Delta.ClearFriends()
         Combat.RestoreAllWeaponMods()
         World.RestoreAll()
         WatermarkFrame.Visible = Config.Settings.Watermark
@@ -5242,6 +5926,14 @@ Session.Bind(UserInputService.InputBegan, function(input: InputObject, gameProce
             UI.Notify("Silent Aim", Config.SilentAim.Enabled and "Enabled" or "Disabled", Config.SilentAim.Enabled and "success" or "info")
         end
     end
+    if code ~= Enum.KeyCode.Unknown and code == Config.Targeting.AddFriendKey then
+        local plr, added = Targeting.ToggleNearestFriend()
+        if plr then
+            UI.Notify("Friends", string.format("%s %s whitelist", plr.DisplayName, added and "added to" or "removed from"), added and "success" or "info")
+        else
+            UI.Notify("Friends", "No player near crosshair", "info")
+        end
+    end
     if code ~= Enum.KeyCode.Unknown and code == Config.TriggerBot.Key then
         if Config.TriggerBot.Enabled and Config.TriggerBot.Mode == "Toggle" then
             ToggleStates.TriggerBot = not (ToggleStates.TriggerBot ~= false)
@@ -5271,7 +5963,6 @@ Session.Bind(RunService.RenderStepped, function(dt: number)
     -- Combat loops
     stepAimbot(dt)
     stepTriggerBot()
-    updateHitboxExpander()
 
     -- World & FOV
     World.Step()

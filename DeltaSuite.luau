@@ -138,6 +138,23 @@ end
 -- ============================================================================
 export type BindValue = Enum.KeyCode | Enum.UserInputType
 
+local function createDefaultActorLayout(isAI: boolean): { Top: { string }, Bottom: { string }, Left: { string }, Right: { string } }
+    if isAI then
+        return {
+            Top = { "Name" },
+            Bottom = { "Distance", "Health", "Weapon" },
+            Left = { "HealthBar" },
+            Right = {},
+        }
+    end
+    return {
+        Top = { "Name" },
+        Bottom = { "Distance", "Health", "Weapon", "KDR", "Reports", "Downed" },
+        Left = { "HealthBar" },
+        Right = {},
+    }
+end
+
 local function createDefaultConfig()
     return {
         Aimbot = {
@@ -226,6 +243,7 @@ local function createDefaultConfig()
             DownedColor = Color3.fromRGB(245, 158, 11),
             ChamsFill = Color3.fromRGB(56, 189, 248),
             ChamsOutline = Color3.fromRGB(255, 255, 255),
+            Layout = createDefaultActorLayout(false),
         },
         AIESP = {
             Enabled = true,
@@ -244,6 +262,7 @@ local function createDefaultConfig()
             BossColor = Color3.fromRGB(244, 63, 94),
             ChamsFill = Color3.fromRGB(251, 146, 60),
             ChamsOutline = Color3.fromRGB(255, 255, 255),
+            Layout = createDefaultActorLayout(true),
         },
         CorpseESP = {
             Enabled = true,
@@ -2053,6 +2072,8 @@ local function computeHealthColor(ratio: number): Color3
     return Color3.fromRGB(239, 68 + 157 * (r * 2), 68)
 end
 
+local ACTOR_LABEL_KEYS = { "Name", "Health", "Distance", "KDR", "Reports", "Weapon", "Downed" }
+
 CreateActorDrawings = function()
     local d: { [string]: any } = {
         BoxOutline = newDraw("Square", { Thickness = 3, Filled = false, Color = Color3.new(0, 0, 0), Visible = false }),
@@ -2060,14 +2081,15 @@ CreateActorDrawings = function()
         Corners = {},
         HpBg = newDraw("Square", { Thickness = 1, Filled = true, Color = Color3.new(0, 0, 0), Visible = false }),
         HpFill = newDraw("Square", { Thickness = 1, Filled = true, Visible = false }),
-        Name = newDraw("Text", { Center = true, Outline = true, Size = 13, Font = 2, Visible = false }),
-        Sub = newDraw("Text", { Center = true, Outline = true, Size = 12, Font = 2, Visible = false }),
-        Badge = newDraw("Text", { Center = true, Outline = true, Size = 12, Font = 2, Visible = false }),
+        Labels = {},
         Tracer = newDraw("Line", { Thickness = 1.3, Visible = false }),
         ArrowOutline = newDraw("Triangle", { Filled = true, Color = Color3.new(0, 0, 0), Visible = false }),
         Arrow = newDraw("Triangle", { Filled = true, Visible = false }),
         Bones = {},
     }
+    for _, key in ipairs(ACTOR_LABEL_KEYS) do
+        d.Labels[key] = newDraw("Text", { Center = true, Outline = true, Size = 13, Font = 2, Visible = false })
+    end
     for i = 1, 8 do
         d.Corners[i] = newDraw("Line", { Thickness = 1.6, Visible = false })
     end
@@ -2077,17 +2099,24 @@ CreateActorDrawings = function()
     return d
 end
 
-local function hideDrawingsTable(d: { [string]: any }, hl: Highlight?)
+local function hideDrawingsTable(d: { [string]: any }, hl: Highlight?, keepArrow: boolean?)
     for k, v in pairs(d) do
+        if keepArrow and (k == "Arrow" or k == "ArrowOutline") then
+            continue
+        end
         if k == "Corners" or k == "Bones" then
             for _, line in ipairs(v) do
                 if line then line.Visible = false end
+            end
+        elseif k == "Labels" then
+            for _, lbl in pairs(v) do
+                if lbl then lbl.Visible = false end
             end
         elseif v then
             v.Visible = false
         end
     end
-    if hl then
+    if hl and not keepArrow then
         hl.Enabled = false
     end
 end
@@ -2097,6 +2126,10 @@ local function destroyVisualEntry(d: { [string]: any }, holder: { Highlight: Hig
         if k == "Corners" or k == "Bones" then
             for _, line in ipairs(v) do
                 if line then pcall(function() line:Remove() end) end
+            end
+        elseif k == "Labels" then
+            for _, lbl in pairs(v) do
+                if lbl then pcall(function() lbl:Remove() end) end
             end
         elseif v then
             pcall(function() v:Remove() end)
@@ -2202,15 +2235,7 @@ local function renderActorESP(entry: ActorEntry, cam: Camera, vp: Vector2)
     local bot2D, botVis = cam:WorldToViewportPoint(botWorld)
 
     if not topVis and not botVis then
-        for k, v in pairs(d) do
-            if k ~= "Arrow" and k ~= "ArrowOutline" then
-                if k == "Corners" or k == "Bones" then
-                    for _, line in ipairs(v) do if line then line.Visible = false end end
-                elseif v then
-                    v.Visible = false
-                end
-            end
-        end
+        hideDrawingsTable(d, entry.Highlight, true)
         return
     end
 
@@ -2222,84 +2247,128 @@ local function renderActorESP(entry: ActorEntry, cam: Camera, vp: Vector2)
     updateBoxVisual(d, cfg.Box, boxX, boxY, boxW, boxH, primaryColor)
 
     local fontSize = Config.Settings.FontSize
+    local lineStep = fontSize + 2
     local hpRatio = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
 
-    if cfg.HealthBar then
-        local barW = 3
-        local barX = boxX - 6
-        local fillH = math.max(boxH * hpRatio, 1)
-        d.HpBg.Position = Vector2.new(barX - 1, boxY - 1)
-        d.HpBg.Size = Vector2.new(barW + 2, boxH + 2)
-        d.HpBg.Visible = true
-        d.HpFill.Position = Vector2.new(barX, boxY + (boxH - fillH))
-        d.HpFill.Size = Vector2.new(barW, fillH)
-        d.HpFill.Color = computeHealthColor(hpRatio)
-        d.HpFill.Visible = true
-    else
-        d.HpBg.Visible = false
-        d.HpFill.Visible = false
-    end
-
+    -- Compute display strings & colors for active actor labels
+    local values: { [string]: { Text: string, Color: Color3, Size: number } } = {}
     if cfg.Name then
         local title = (not isAI and entry.Player) and entry.Player.DisplayName or model.Name
         if isAI then
             title = "[NPC] " .. title
         end
-        d.Name.Text = title
-        d.Name.Color = primaryColor
-        d.Name.Size = fontSize
-        d.Name.Position = Vector2.new(boxX + boxW * 0.5, boxY - fontSize - 3)
-        d.Name.Visible = true
-    else
-        d.Name.Visible = false
-    end
-
-    local subParts = {}
-    if cfg.Distance then
-        table.insert(subParts, string.format("%.0fm", dist))
+        values.Name = { Text = title, Color = primaryColor, Size = fontSize }
     end
     if cfg.HealthText then
-        table.insert(subParts, string.format("%.0f HP", hum.Health))
+        values.Health = { Text = string.format("%.0f HP", hum.Health), Color = computeHealthColor(hpRatio), Size = math.max(fontSize - 1, 10) }
+    end
+    if cfg.Distance then
+        values.Distance = { Text = string.format("%.0fm", dist), Color = Color3.fromRGB(226, 232, 240), Size = math.max(fontSize - 1, 10) }
     end
     if cfg.Weapon then
         local wepName = Delta.GetHeldWeaponName(entry.Player, model)
         if wepName then
-            table.insert(subParts, wepName)
+            values.Weapon = { Text = wepName, Color = Color3.fromRGB(203, 213, 225), Size = math.max(fontSize - 1, 10) }
         end
     end
-    if #subParts > 0 then
-        d.Sub.Text = table.concat(subParts, " | ")
-        d.Sub.Color = Color3.fromRGB(226, 232, 240)
-        d.Sub.Size = math.max(fontSize - 1, 10)
-        d.Sub.Position = Vector2.new(boxX + boxW * 0.5, boxY + boxH + 2)
-        d.Sub.Visible = true
-    else
-        d.Sub.Visible = false
-    end
-
-    local badgeParts = {}
     if not isAI and entry.Player then
         if Config.PlayerESP.DownedBadge and isDowned then
-            table.insert(badgeParts, "[DOWNED]")
+            values.Downed = { Text = "[DOWNED]", Color = Config.PlayerESP.DownedColor, Size = math.max(fontSize - 1, 10) }
         end
         if Config.PlayerESP.KDR or Config.PlayerESP.Reports then
             local kdrStr, repCount = Delta.GetPlayerMeta(entry.Player)
             if Config.PlayerESP.KDR then
-                table.insert(badgeParts, "KDR: " .. (kdrStr or "N/A"))
+                values.KDR = { Text = "KDR: " .. (kdrStr or "N/A"), Color = Color3.fromRGB(148, 163, 184), Size = math.max(fontSize - 2, 10) }
             end
             if Config.PlayerESP.Reports then
-                table.insert(badgeParts, "Rep: " .. tostring(repCount or 0))
+                values.Reports = { Text = "Rep: " .. tostring(repCount or 0), Color = (repCount and repCount > 0) and Config.PlayerESP.DownedColor or Color3.fromRGB(148, 163, 184), Size = math.max(fontSize - 2, 10) }
             end
         end
     end
-    if #badgeParts > 0 then
-        d.Badge.Text = table.concat(badgeParts, "  ")
-        d.Badge.Color = isDowned and Config.PlayerESP.DownedColor or Color3.fromRGB(148, 163, 184)
-        d.Badge.Size = math.max(fontSize - 2, 10)
-        d.Badge.Position = Vector2.new(boxX + boxW * 0.5, boxY + boxH + (#subParts > 0 and (fontSize + 3) or 2))
-        d.Badge.Visible = true
-    else
-        d.Badge.Visible = false
+
+    -- Hide all pooled labels first; docked loops re-enable placed ones cleanly
+    for _, lbl in pairs(d.Labels) do
+        lbl.Visible = false
+    end
+    d.HpBg.Visible = false
+    d.HpFill.Visible = false
+
+    local layout = cfg.Layout or createDefaultActorLayout(isAI)
+    for _, zoneName in ipairs({ "Top", "Bottom", "Left", "Right" }) do
+        local list = layout[zoneName] or {}
+        local hasHpBar = false
+        local textKeys: { string } = {}
+        for _, key in ipairs(list) do
+            if key == "HealthBar" then
+                if cfg.HealthBar then
+                    hasHpBar = true
+                end
+            elseif values[key] and d.Labels[key] then
+                table.insert(textKeys, key)
+            end
+        end
+
+        if hasHpBar then
+            if zoneName == "Left" or zoneName == "Right" then
+                local barW = 3
+                local barX = (zoneName == "Left") and (boxX - 6) or (boxX + boxW + 3)
+                local fillH = math.max(boxH * hpRatio, 1)
+                d.HpBg.Position = Vector2.new(barX - 1, boxY - 1)
+                d.HpBg.Size = Vector2.new(barW + 2, boxH + 2)
+                d.HpBg.Visible = true
+                d.HpFill.Position = Vector2.new(barX, boxY + (boxH - fillH))
+                d.HpFill.Size = Vector2.new(barW, fillH)
+                d.HpFill.Color = computeHealthColor(hpRatio)
+                d.HpFill.Visible = true
+            else
+                local barH = 3
+                local barY = (zoneName == "Top") and (boxY - 6) or (boxY + boxH + 3)
+                local fillW = math.max(boxW * hpRatio, 1)
+                d.HpBg.Position = Vector2.new(boxX - 1, barY - 1)
+                d.HpBg.Size = Vector2.new(boxW + 2, barH + 2)
+                d.HpBg.Visible = true
+                d.HpFill.Position = Vector2.new(boxX, barY)
+                d.HpFill.Size = Vector2.new(fillW, barH)
+                d.HpFill.Color = computeHealthColor(hpRatio)
+                d.HpFill.Visible = true
+            end
+        end
+
+        local n = #textKeys
+        if n > 0 then
+            local barPad = hasHpBar and 7 or 2
+            local centerX = boxX + boxW * 0.5
+            local totalTextH = n * lineStep
+            local sideStartY = boxY + math.max((boxH - totalTextH) * 0.5, 0)
+
+            for idx, key in ipairs(textKeys) do
+                local lbl = d.Labels[key]
+                local info = values[key]
+                lbl.Text = info.Text
+                lbl.Color = info.Color
+                lbl.Size = info.Size
+                if zoneName == "Top" then
+                    lbl.Center = true
+                    local bottomOfStack = boxY - barPad - 2
+                    local rowY = bottomOfStack - (n - idx + 1) * lineStep
+                    lbl.Position = Vector2.new(centerX, rowY)
+                elseif zoneName == "Bottom" then
+                    lbl.Center = true
+                    local rowY = boxY + boxH + barPad + (idx - 1) * lineStep
+                    lbl.Position = Vector2.new(centerX, rowY)
+                elseif zoneName == "Left" then
+                    lbl.Center = false
+                    local rowY = sideStartY + (idx - 1) * lineStep
+                    local boundsW = lbl.TextBounds.X
+                    lbl.Position = Vector2.new(boxX - barPad - 4 - boundsW, rowY)
+                elseif zoneName == "Right" then
+                    lbl.Center = false
+                    local rowY = sideStartY + (idx - 1) * lineStep
+                    lbl.Position = Vector2.new(boxX + boxW + barPad + 4, rowY)
+                end
+                lbl.Visible = true
+            end
+        end
     end
 
     if cfg.Tracers then
@@ -2701,12 +2770,22 @@ toastLayout.Parent = ToastContainer
 
 local UI = {
     _Refreshers = {} :: { () -> () },
+    _OnChange = {} :: { () -> () },
+    _ActiveEspCategory = "Player",
+    Preview = {} :: { [string]: any },
 }
+
+function UI.NotifyChange()
+    for _, fn in ipairs(UI._OnChange) do
+        pcall(fn)
+    end
+end
 
 function UI.RefreshAll()
     for _, fn in ipairs(UI._Refreshers) do
         pcall(fn)
     end
+    UI.NotifyChange()
 end
 
 function UI.Notify(title: string, desc: string, kind: ("info" | "success" | "warn")?)
@@ -3015,6 +3094,9 @@ local function selectTab(tab: TabObj)
     end
     CurrentTab = tab
     ActiveTabTitle.Text = tab.Title
+    if type(UI.Preview.SyncVisibility) == "function" then
+        UI.Preview.SyncVisibility()
+    end
 end
 
 local function makeScrollColumn(parent: Instance, isRight: boolean): ScrollingFrame
@@ -3220,6 +3302,7 @@ function UI.AddToggle(sec: Frame, label: string, getter: () -> boolean, setter: 
     Session.Bind(track.MouseButton1Click, function()
         setter(not getter())
         sync(false)
+        UI.NotifyChange()
     end)
 end
 
@@ -3291,6 +3374,7 @@ function UI.AddSlider(sec: Frame, label: string, minVal: number, maxVal: number,
         snapped = math.clamp(tonumber(string.format("%.4f", snapped)) or raw, minVal, maxVal)
         setter(snapped)
         sync()
+        UI.NotifyChange()
     end
 
     Session.Bind(bar.InputBegan, function(input)
@@ -3386,6 +3470,7 @@ function UI.AddDropdown(sec: Frame, label: string, options: { string }, getter: 
                 setter(opt)
                 sync()
                 closeActivePopup()
+                UI.NotifyChange()
             end)
         end
         ActivePopup = menu
@@ -3472,6 +3557,7 @@ function UI.AddColorPicker(sec: Frame, label: string, getter: () -> Color3, sett
                 setter(col)
                 swatch.BackgroundColor3 = col
                 closeActivePopup()
+                UI.NotifyChange()
             end)
         end
         ActivePopup = pop
@@ -3623,6 +3709,7 @@ function UI.AddEspCategoryRow(sec: Frame, label: string, getter: () -> boolean, 
     Session.Bind(track.MouseButton1Click, function()
         setter(not getter())
         sync(false)
+        UI.NotifyChange()
     end)
     Session.Bind(gearBtn.MouseButton1Click, function()
         onFilterClick()
@@ -3733,11 +3820,15 @@ do
 
     local function selectCategory(cat: string)
         activeCategory = cat
+        UI._ActiveEspCategory = cat
         if filterTitleLabel then
             filterTitleLabel.Text = ("Filters · " .. cat):upper()
         end
         for name, fr in pairs(filterFrames) do
             fr.Visible = (name == cat)
+        end
+        if type(UI.Preview.SyncVisibility) == "function" then
+            UI.Preview.SyncVisibility()
         end
     end
 
@@ -3964,6 +4055,668 @@ do
 end
 
 -- ============================================================================
+-- 10B. INTERACTIVE 4-ZONE CHARACTER PREVIEW PANEL (PLAYER & NPC ONLY)
+-- ============================================================================
+do
+    local PreviewFrame = Instance.new("Frame")
+    PreviewFrame.Name = "EspPreviewPanel"
+    PreviewFrame.Size = UDim2.fromOffset(282, 490)
+    PreviewFrame.BackgroundColor3 = THEME.BgMain
+    PreviewFrame.ClipsDescendants = true
+    PreviewFrame.Visible = false
+    PreviewFrame.ZIndex = 20
+    PreviewFrame.Parent = ScreenGui
+    addCorner(PreviewFrame, 10)
+    addStroke(PreviewFrame, THEME.Border, 1.2, 0)
+
+    local PHeader = Instance.new("Frame")
+    PHeader.Size = UDim2.new(1, 0, 0, 42)
+    PHeader.BackgroundColor3 = THEME.BgHeader
+    PHeader.BorderSizePixel = 0
+    PHeader.Parent = PreviewFrame
+
+    local PHeaderSep = Instance.new("Frame")
+    PHeaderSep.Position = UDim2.new(0, 0, 1, -1)
+    PHeaderSep.Size = UDim2.new(1, 0, 0, 1)
+    PHeaderSep.BackgroundColor3 = THEME.Border
+    PHeaderSep.BorderSizePixel = 0
+    PHeaderSep.Parent = PHeader
+
+    local PTitle = Instance.new("TextLabel")
+    PTitle.BackgroundTransparency = 1
+    PTitle.Position = UDim2.fromOffset(14, 0)
+    PTitle.Size = UDim2.new(0, 74, 1, 0)
+    PTitle.Font = Enum.Font.GothamBold
+    PTitle.TextSize = 13
+    PTitle.TextColor3 = THEME.TextPrimary
+    PTitle.TextXAlignment = Enum.TextXAlignment.Left
+    PTitle.Text = "PREVIEW"
+    PTitle.Parent = PHeader
+
+    local PCatBadge = Instance.new("TextLabel")
+    PCatBadge.Position = UDim2.fromOffset(88, 12)
+    PCatBadge.Size = UDim2.fromOffset(58, 18)
+    PCatBadge.BackgroundColor3 = THEME.BgControl
+    PCatBadge.Font = Enum.Font.GothamBold
+    PCatBadge.TextSize = 10
+    PCatBadge.TextColor3 = THEME.Accent
+    PCatBadge.Text = "PLAYER"
+    PCatBadge.Parent = PHeader
+    addCorner(PCatBadge, 5)
+
+    local LockBtn = Instance.new("TextButton")
+    LockBtn.AnchorPoint = Vector2.new(1, 0.5)
+    LockBtn.Position = UDim2.new(1, -46, 0.5, 0)
+    LockBtn.Size = UDim2.fromOffset(36, 22)
+    LockBtn.BackgroundColor3 = THEME.BgControl
+    LockBtn.Font = Enum.Font.GothamBold
+    LockBtn.TextSize = 10
+    LockBtn.TextColor3 = THEME.TextSecondary
+    LockBtn.Text = "Free"
+    LockBtn.AutoButtonColor = false
+    LockBtn.Parent = PHeader
+    addCorner(LockBtn, 5)
+    local lockStroke = addStroke(LockBtn, THEME.Border, 1, 0.25)
+
+    local ResetBtn = Instance.new("TextButton")
+    ResetBtn.AnchorPoint = Vector2.new(1, 0.5)
+    ResetBtn.Position = UDim2.new(1, -10, 0.5, 0)
+    ResetBtn.Size = UDim2.fromOffset(30, 22)
+    ResetBtn.BackgroundColor3 = THEME.BgControl
+    ResetBtn.Font = Enum.Font.GothamBold
+    ResetBtn.TextSize = 11
+    ResetBtn.TextColor3 = THEME.TextSecondary
+    ResetBtn.Text = "Rst"
+    ResetBtn.AutoButtonColor = false
+    ResetBtn.Parent = PHeader
+    addCorner(ResetBtn, 5)
+    addStroke(ResetBtn, THEME.Border, 1, 0.25)
+
+    local HintBar = Instance.new("TextLabel")
+    HintBar.Position = UDim2.fromOffset(10, 44)
+    HintBar.Size = UDim2.new(1, -20, 0, 18)
+    HintBar.BackgroundTransparency = 1
+    HintBar.Font = Enum.Font.Gotham
+    HintBar.TextSize = 10
+    HintBar.TextColor3 = THEME.TextMuted
+    HintBar.Text = "Drag labels to Top, Bottom, Left, or Right"
+    HintBar.Parent = PreviewFrame
+
+    local STAGE_W, STAGE_H = 262, 416
+    local BOX_X, BOX_Y, BOX_W, BOX_H = 88, 132, 86, 152
+
+    local Stage = Instance.new("Frame")
+    Stage.Position = UDim2.fromOffset(10, 64)
+    Stage.Size = UDim2.fromOffset(STAGE_W, STAGE_H)
+    Stage.BackgroundColor3 = Color3.fromRGB(9, 12, 18)
+    Stage.ClipsDescendants = true
+    Stage.Parent = PreviewFrame
+    addCorner(Stage, 8)
+    addStroke(Stage, THEME.Border, 1, 0.2)
+
+    local stageGrad = Instance.new("UIGradient")
+    stageGrad.Rotation = 90
+    stageGrad.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(16, 21, 31)),
+        ColorSequenceKeypoint.new(0.5, Color3.fromRGB(10, 13, 20)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(15, 20, 29)),
+    })
+    stageGrad.Parent = Stage
+
+    -- Pedestal plate underneath dummy
+    local Pedestal = Instance.new("Frame")
+    Pedestal.AnchorPoint = Vector2.new(0.5, 0.5)
+    Pedestal.Position = UDim2.fromOffset(BOX_X + BOX_W * 0.5, BOX_Y + BOX_H - 2)
+    Pedestal.Size = UDim2.fromOffset(112, 22)
+    Pedestal.BackgroundColor3 = Color3.fromRGB(22, 29, 43)
+    Pedestal.BackgroundTransparency = 0.25
+    Pedestal.ZIndex = 2
+    Pedestal.Parent = Stage
+    addCorner(Pedestal, 11)
+    addStroke(Pedestal, THEME.Border, 1, 0.2)
+
+    -- 3D ViewportFrame character rig in center
+    local CharViewport = Instance.new("ViewportFrame")
+    CharViewport.Position = UDim2.fromOffset(BOX_X - 18, BOX_Y - 12)
+    CharViewport.Size = UDim2.fromOffset(BOX_W + 36, BOX_H + 22)
+    CharViewport.BackgroundTransparency = 1
+    CharViewport.Ambient = Color3.fromRGB(170, 182, 204)
+    CharViewport.LightColor = Color3.fromRGB(255, 255, 255)
+    CharViewport.LightDirection = Vector3.new(-0.35, -0.75, -0.55)
+    CharViewport.ZIndex = 3
+    CharViewport.Parent = Stage
+
+    local WorldM = Instance.new("WorldModel")
+    WorldM.Parent = CharViewport
+
+    local DummyCam = Instance.new("Camera")
+    DummyCam.FieldOfView = 38
+    DummyCam.CFrame = CFrame.lookAt(Vector3.new(0, 0.25, 7.6), Vector3.new(0, 0.1, 0))
+    DummyCam.Parent = CharViewport
+    CharViewport.CurrentCamera = DummyCam
+
+    local DummyParts: { BasePart } = {}
+    do
+        local rigSpecs = {
+            { "Head", Vector3.new(1.12, 1.12, 1.12), Vector3.new(0, 2.08, 0) },
+            { "UpperTorso", Vector3.new(1.88, 1.25, 0.96), Vector3.new(0, 0.85, 0) },
+            { "LowerTorso", Vector3.new(1.76, 0.72, 0.92), Vector3.new(0, -0.14, 0) },
+            { "LeftArm", Vector3.new(0.86, 1.92, 0.88), Vector3.new(-1.44, 0.48, 0) },
+            { "RightArm", Vector3.new(0.86, 1.92, 0.88), Vector3.new(1.44, 0.48, 0) },
+            { "LeftLeg", Vector3.new(0.88, 1.95, 0.92), Vector3.new(-0.49, -1.52, 0) },
+            { "RightLeg", Vector3.new(0.88, 1.95, 0.92), Vector3.new(0.49, -1.52, 0) },
+        }
+        for _, spec in ipairs(rigSpecs) do
+            local p = Instance.new("Part")
+            p.Name = spec[1]
+            p.Size = spec[2]
+            p.Position = spec[3]
+            p.Anchored = true
+            p.Material = Enum.Material.SmoothPlastic
+            p.Color = Color3.fromRGB(36, 44, 61)
+            p.Parent = WorldM
+            table.insert(DummyParts, p)
+        end
+    end
+
+    -- Box & Corner Bracket Overlays around Dummy
+    local BoxOutlineFrame = Instance.new("Frame")
+    BoxOutlineFrame.Position = UDim2.fromOffset(BOX_X, BOX_Y)
+    BoxOutlineFrame.Size = UDim2.fromOffset(BOX_W, BOX_H)
+    BoxOutlineFrame.BackgroundTransparency = 1
+    BoxOutlineFrame.ZIndex = 6
+    BoxOutlineFrame.Visible = false
+    BoxOutlineFrame.Parent = Stage
+    local boxStroke = addStroke(BoxOutlineFrame, THEME.Accent, 1.5, 0)
+
+    local CornerFrames: { Frame } = {}
+    local cw, ch = 18, 22
+    local cornerSpecs = {
+        { BOX_X, BOX_Y, cw, 2 }, { BOX_X, BOX_Y, 2, ch },
+        { BOX_X + BOX_W - cw, BOX_Y, cw, 2 }, { BOX_X + BOX_W - 2, BOX_Y, 2, ch },
+        { BOX_X, BOX_Y + BOX_H - 2, cw, 2 }, { BOX_X, BOX_Y + BOX_H - ch, 2, ch },
+        { BOX_X + BOX_W - cw, BOX_Y + BOX_H - 2, cw, 2 }, { BOX_X + BOX_W - 2, BOX_Y + BOX_H - ch, 2, ch },
+    }
+    for _, sp in ipairs(cornerSpecs) do
+        local f = Instance.new("Frame")
+        f.Position = UDim2.fromOffset(sp[1], sp[2])
+        f.Size = UDim2.fromOffset(sp[3], sp[4])
+        f.BorderSizePixel = 0
+        f.ZIndex = 7
+        f.Visible = false
+        f.Parent = Stage
+        table.insert(CornerFrames, f)
+    end
+
+    -- Skeleton Overlay inside Preview Stage
+    local SkelLines: { Frame } = {}
+    do
+        local cx = BOX_X + BOX_W * 0.5
+        local joints = {
+            Head = Vector2.new(cx, BOX_Y + 21),
+            Neck = Vector2.new(cx, BOX_Y + 34),
+            TorsoMid = Vector2.new(cx, BOX_Y + 58),
+            Pelvis = Vector2.new(cx, BOX_Y + 84),
+            LShoulder = Vector2.new(cx - 21, BOX_Y + 39),
+            LElbow = Vector2.new(cx - 26, BOX_Y + 62),
+            LHand = Vector2.new(cx - 27, BOX_Y + 86),
+            RShoulder = Vector2.new(cx + 21, BOX_Y + 39),
+            RElbow = Vector2.new(cx + 26, BOX_Y + 62),
+            RHand = Vector2.new(cx + 27, BOX_Y + 86),
+            LHip = Vector2.new(cx - 11, BOX_Y + 88),
+            LKnee = Vector2.new(cx - 12, BOX_Y + 118),
+            LFoot = Vector2.new(cx - 13, BOX_Y + 144),
+            RHip = Vector2.new(cx + 11, BOX_Y + 88),
+            RKnee = Vector2.new(cx + 12, BOX_Y + 118),
+            RFoot = Vector2.new(cx + 13, BOX_Y + 144),
+        }
+        local segs = {
+            { joints.Head, joints.Neck }, { joints.Neck, joints.Pelvis },
+            { joints.Neck, joints.LShoulder }, { joints.LShoulder, joints.LElbow }, { joints.LElbow, joints.LHand },
+            { joints.Neck, joints.RShoulder }, { joints.RShoulder, joints.RElbow }, { joints.RElbow, joints.RHand },
+            { joints.Pelvis, joints.LHip }, { joints.LHip, joints.LKnee }, { joints.LKnee, joints.LFoot },
+            { joints.Pelvis, joints.RHip }, { joints.RHip, joints.RKnee }, { joints.RKnee, joints.RFoot },
+        }
+        for _, seg in ipairs(segs) do
+            local p1, p2 = seg[1], seg[2]
+            local diff = p2 - p1
+            local line = Instance.new("Frame")
+            line.AnchorPoint = Vector2.new(0.5, 0.5)
+            line.Position = UDim2.fromOffset((p1.X + p2.X) * 0.5, (p1.Y + p2.Y) * 0.5)
+            line.Size = UDim2.fromOffset(math.max(diff.Magnitude, 2), 1.6)
+            line.Rotation = math.deg(math.atan2(diff.Y, diff.X))
+            line.BorderSizePixel = 0
+            line.ZIndex = 5
+            line.Visible = false
+            line.Parent = Stage
+            table.insert(SkelLines, line)
+        end
+    end
+
+    -- 4 Exclusive Drop Zones (Top, Bottom, Left, Right)
+    local ZONE_BOUNDS: { [string]: { X: number, Y: number, W: number, H: number } } = {
+        Top = { X = 6, Y = 4, W = STAGE_W - 12, H = BOX_Y - 8 },
+        Bottom = { X = 6, Y = BOX_Y + BOX_H + 4, W = STAGE_W - 12, H = STAGE_H - (BOX_Y + BOX_H + 8) },
+        Left = { X = 4, Y = BOX_Y, W = BOX_X - 8, H = BOX_H },
+        Right = { X = BOX_X + BOX_W + 4, Y = BOX_Y, W = STAGE_W - (BOX_X + BOX_W + 8), H = BOX_H },
+    }
+    local ZoneHighlights: { [string]: { Frame: Frame, Stroke: UIStroke, Tag: TextLabel } } = {}
+    for _, zName in ipairs({ "Top", "Bottom", "Left", "Right" }) do
+        local b = ZONE_BOUNDS[zName]
+        local zf = Instance.new("Frame")
+        zf.Position = UDim2.fromOffset(b.X, b.Y)
+        zf.Size = UDim2.fromOffset(b.W, b.H)
+        zf.BackgroundColor3 = THEME.Accent
+        zf.BackgroundTransparency = 1
+        zf.ZIndex = 4
+        zf.Visible = false
+        zf.Parent = Stage
+        addCorner(zf, 6)
+        local zst = addStroke(zf, THEME.Border, 1, 0.35)
+
+        local zt = Instance.new("TextLabel")
+        zt.BackgroundTransparency = 1
+        zt.Position = UDim2.fromOffset(4, 2)
+        zt.Size = UDim2.new(1, -8, 0, 12)
+        zt.Font = Enum.Font.GothamBold
+        zt.TextSize = 9
+        zt.TextColor3 = THEME.TextMuted
+        zt.TextXAlignment = (zName == "Right") and Enum.TextXAlignment.Right or Enum.TextXAlignment.Left
+        zt.Text = zName:upper()
+        zt.Parent = zf
+
+        ZoneHighlights[zName] = { Frame = zf, Stroke = zst, Tag = zt }
+    end
+
+    local InsertLine = Instance.new("Frame")
+    InsertLine.Size = UDim2.fromOffset(64, 2)
+    InsertLine.BackgroundColor3 = THEME.Accent
+    InsertLine.BorderSizePixel = 0
+    InsertLine.ZIndex = 16
+    InsertLine.Visible = false
+    InsertLine.Parent = Stage
+
+    -- State for Preview interaction
+    local DragLocked = false
+    local DynamicItems: { Frame } = {}
+    local SlotMeta: { [string]: { { Key: string, CenterY: number } } } = { Top = {}, Bottom = {}, Left = {}, Right = {} }
+    local DraggingKey: string? = nil
+    local DragGhost: TextLabel? = nil
+    local HoverZone: string? = nil
+    local HoverIndex = 1
+
+    local function getActivePreviewTarget(): (boolean, any)
+        local isAI = (UI._ActiveEspCategory == "Npc")
+        return isAI, isAI and Config.AIESP or Config.PlayerESP
+    end
+
+    local PREVIEW_SAMPLES: { [string]: string } = {
+        Name = "Player",
+        Distance = "249m",
+        Health = "100 HP",
+        Weapon = "AK74",
+        KDR = "KDR: 1.35",
+        Reports = "Rep: 1",
+        Downed = "[DOWNED]",
+    }
+
+    local function getPreviewItemsEnabled(cfg: any, isAI: boolean): { [string]: { Text: string, Color: Color3 } }
+        local baseColor = isAI and cfg.Color or cfg.EnemyColor
+        local map: { [string]: { Text: string, Color: Color3 } } = {}
+        if cfg.Name then
+            map.Name = { Text = isAI and "[NPC] Bandit" or "Player", Color = baseColor }
+        end
+        if cfg.HealthText then
+            map.Health = { Text = "100 HP", Color = THEME.Success }
+        end
+        if cfg.Distance then
+            map.Distance = { Text = "249m", Color = Color3.fromRGB(226, 232, 240) }
+        end
+        if cfg.Weapon then
+            map.Weapon = { Text = "AK74", Color = Color3.fromRGB(203, 213, 225) }
+        end
+        if not isAI then
+            if cfg.KDR then
+                map.KDR = { Text = "KDR: 1.35", Color = Color3.fromRGB(148, 163, 184) }
+            end
+            if cfg.Reports then
+                map.Reports = { Text = "Rep: 1", Color = Config.PlayerESP.DownedColor }
+            end
+            if cfg.DownedBadge then
+                map.Downed = { Text = "[DOWNED]", Color = Config.PlayerESP.DownedColor }
+            end
+        end
+        return map
+    end
+
+    local function updateStageZoneVisuals(activeZone: string?)
+        local dragging = (DraggingKey ~= nil)
+        for zName, z in pairs(ZoneHighlights) do
+            z.Frame.Visible = dragging
+            local match = (activeZone == zName)
+            z.Frame.BackgroundTransparency = match and 0.85 or 0.96
+            z.Stroke.Color = match and THEME.Accent or THEME.Border
+            z.Stroke.Transparency = match and 0 or 0.4
+            z.Tag.TextColor3 = match and THEME.Accent or THEME.TextMuted
+        end
+    end
+
+    local function resolveZoneFromPoint(stagePos: Vector2): (string, number, number)
+        local zone: string
+        if stagePos.Y < BOX_Y then
+            zone = "Top"
+        elseif stagePos.Y > BOX_Y + BOX_H then
+            zone = "Bottom"
+        elseif stagePos.X < BOX_X + BOX_W * 0.5 then
+            zone = "Left"
+        else
+            zone = "Right"
+        end
+
+        local items = SlotMeta[zone]
+        local insertAt = #items + 1
+        local lineY = ZONE_BOUNDS[zone].Y + 16
+        for i, item in ipairs(items) do
+            if stagePos.Y < item.CenterY then
+                insertAt = i
+                lineY = item.CenterY - 8
+                break
+            end
+            lineY = item.CenterY + 8
+        end
+        return zone, insertAt, lineY
+    end
+
+    local GuiSvc = game:GetService("GuiService")
+    local function getMouseAbs(): Vector2
+        local inset = GuiSvc:GetGuiInset()
+        return UserInputService:GetMouseLocation() - inset
+    end
+
+    local function repositionPreview()
+        local mwPos = MainWindow.AbsolutePosition
+        local mwSize = MainWindow.AbsoluteSize
+        local rootPos = ScreenGui.AbsolutePosition
+        local cam = Workspace.CurrentCamera
+        local vpW = cam and cam.ViewportSize.X or 1920
+        local rightX = mwPos.X + mwSize.X + 12
+        local targetX = rightX
+        if rightX + PreviewFrame.AbsoluteSize.X > vpW - 8 then
+            targetX = math.max(8, mwPos.X - PreviewFrame.AbsoluteSize.X - 12)
+        end
+        PreviewFrame.Position = UDim2.fromOffset(targetX - rootPos.X, mwPos.Y - rootPos.Y)
+    end
+
+    function UI.Preview.Refresh()
+        for _, item in ipairs(DynamicItems) do
+            item:Destroy()
+        end
+        table.clear(DynamicItems)
+        SlotMeta = { Top = {}, Bottom = {}, Left = {}, Right = {} }
+
+        local isAI, cfg = getActivePreviewTarget()
+        PCatBadge.Text = isAI and "NPC" or "PLAYER"
+
+        local primaryCol = isAI and cfg.Color or cfg.EnemyColor
+        local chamsCol = cfg.ChamsFill or primaryCol
+
+        -- Dummy appearance (Highlights vs Default)
+        for _, part in ipairs(DummyParts) do
+            part.Color = cfg.Highlights and chamsCol or Color3.fromRGB(36, 44, 61)
+        end
+        CharViewport.ImageColor3 = cfg.Highlights and chamsCol or Color3.new(1, 1, 1)
+
+        -- Box & Corners
+        BoxOutlineFrame.Visible = (cfg.Box == "2D")
+        boxStroke.Color = primaryCol
+        for _, cf in ipairs(CornerFrames) do
+            cf.Visible = (cfg.Box == "Corner")
+            cf.BackgroundColor3 = primaryCol
+        end
+
+        -- Skeleton lines
+        for _, sk in ipairs(SkelLines) do
+            sk.Visible = (cfg.Skeleton == true)
+            sk.BackgroundColor3 = primaryCol
+        end
+
+        local activeValues = getPreviewItemsEnabled(cfg, isAI)
+        local layout = cfg.Layout or createDefaultActorLayout(isAI)
+        local lineStep = 15
+
+        local function bindDraggable(widget: GuiButton, key: string)
+            Session.Bind(widget.InputBegan, function(input: InputObject)
+                if DragLocked or input.UserInputType ~= Enum.UserInputType.MouseButton1 then
+                    return
+                end
+                DraggingKey = key
+                if DragGhost then
+                    DragGhost:Destroy()
+                end
+                local ghost = Instance.new("TextLabel")
+                ghost.Size = UDim2.fromOffset(78, 18)
+                ghost.BackgroundColor3 = THEME.BgControl
+                ghost.Font = Enum.Font.GothamBold
+                ghost.TextSize = 11
+                ghost.TextColor3 = THEME.Accent
+                ghost.Text = key == "HealthBar" and "HealthBar" or (PREVIEW_SAMPLES[key] or key)
+                ghost.ZIndex = 70
+                ghost.Parent = PopupLayer
+                addCorner(ghost, 4)
+                addStroke(ghost, THEME.Accent, 1, 0)
+                DragGhost = ghost
+                local ma = getMouseAbs()
+                local pAbs = PopupLayer.AbsolutePosition
+                ghost.Position = UDim2.fromOffset(ma.X - pAbs.X - 39, ma.Y - pAbs.Y - 9)
+                updateStageZoneVisuals(nil)
+            end)
+        end
+
+        for _, zoneName in ipairs({ "Top", "Bottom", "Left", "Right" }) do
+            local list = layout[zoneName] or {}
+            local hasHpBar = false
+            local textKeys: { string } = {}
+            for _, key in ipairs(list) do
+                if key == "HealthBar" then
+                    if cfg.HealthBar then
+                        hasHpBar = true
+                    end
+                elseif activeValues[key] then
+                    table.insert(textKeys, key)
+                end
+            end
+
+            if hasHpBar then
+                local barBtn = Instance.new("TextButton")
+                barBtn.Text = ""
+                barBtn.AutoButtonColor = false
+                barBtn.BackgroundTransparency = 1
+                barBtn.ZIndex = 12
+                barBtn.Parent = Stage
+
+                local barBg = Instance.new("Frame")
+                barBg.BackgroundColor3 = Color3.new(0, 0, 0)
+                barBg.BorderSizePixel = 0
+                barBg.ZIndex = 12
+                barBg.Parent = barBtn
+                addCorner(barBg, 2)
+
+                local fill = Instance.new("Frame")
+                fill.BackgroundColor3 = THEME.Success
+                fill.BorderSizePixel = 0
+                fill.ZIndex = 12
+                fill.Parent = barBg
+                addCorner(fill, 2)
+
+                if zoneName == "Left" or zoneName == "Right" then
+                    local grabX = (zoneName == "Left") and (BOX_X - 12) or (BOX_X + BOX_W)
+                    barBtn.Position = UDim2.fromOffset(grabX, BOX_Y)
+                    barBtn.Size = UDim2.fromOffset(13, BOX_H)
+                    barBg.Position = UDim2.fromOffset(4, 0)
+                    barBg.Size = UDim2.fromOffset(5, BOX_H)
+                    fill.Position = UDim2.fromOffset(1, math.floor(BOX_H * 0.16))
+                    fill.Size = UDim2.fromOffset(3, math.floor(BOX_H * 0.84) - 1)
+                    table.insert(SlotMeta[zoneName], { Key = "HealthBar", CenterY = BOX_Y + BOX_H * 0.5 })
+                else
+                    local grabY = (zoneName == "Top") and (BOX_Y - 12) or (BOX_Y + BOX_H - 1)
+                    local grabH = (zoneName == "Top") and 13 or 11
+                    barBtn.Position = UDim2.fromOffset(BOX_X, grabY)
+                    barBtn.Size = UDim2.fromOffset(BOX_W, grabH)
+                    barBg.Position = UDim2.fromOffset(0, 4)
+                    barBg.Size = UDim2.fromOffset(BOX_W, 5)
+                    fill.Position = UDim2.fromOffset(1, 1)
+                    fill.Size = UDim2.fromOffset(math.floor(BOX_W * 0.84), 3)
+                    table.insert(SlotMeta[zoneName], { Key = "HealthBar", CenterY = grabY + 6 })
+                end
+                bindDraggable(barBtn, "HealthBar")
+                table.insert(DynamicItems, barBtn)
+            end
+
+            local n = #textKeys
+            if n > 0 then
+                local barPad = hasHpBar and 10 or 3
+                local totalTextH = n * lineStep
+                local sideStartY = BOX_Y + math.max((BOX_H - totalTextH) * 0.5, 2)
+
+                for idx, key in ipairs(textKeys) do
+                    local info = activeValues[key]
+                    local pill = Instance.new("TextButton")
+                    pill.AutoButtonColor = false
+                    pill.BackgroundColor3 = THEME.BgMain
+                    pill.BackgroundTransparency = 0.65
+                    pill.Font = Enum.Font.GothamBold
+                    pill.TextSize = 11
+                    pill.TextColor3 = info.Color
+                    pill.Text = info.Text
+                    pill.ZIndex = 13
+                    pill.Parent = Stage
+                    addCorner(pill, 3)
+
+                    local yPos = 0
+                    if zoneName == "Top" then
+                        pill.Size = UDim2.fromOffset(110, lineStep - 1)
+                        pill.TextXAlignment = Enum.TextXAlignment.Center
+                        yPos = (BOX_Y - barPad - 2) - (n - idx + 1) * lineStep
+                        pill.Position = UDim2.fromOffset(BOX_X + BOX_W * 0.5 - 55, yPos)
+                    elseif zoneName == "Bottom" then
+                        pill.Size = UDim2.fromOffset(110, lineStep - 1)
+                        pill.TextXAlignment = Enum.TextXAlignment.Center
+                        yPos = BOX_Y + BOX_H + barPad + (idx - 1) * lineStep
+                        pill.Position = UDim2.fromOffset(BOX_X + BOX_W * 0.5 - 55, yPos)
+                    elseif zoneName == "Left" then
+                        local w = math.max(BOX_X - barPad - 8, 54)
+                        pill.Size = UDim2.fromOffset(w, lineStep - 1)
+                        pill.TextXAlignment = Enum.TextXAlignment.Right
+                        yPos = sideStartY + (idx - 1) * lineStep
+                        pill.Position = UDim2.fromOffset(BOX_X - barPad - w - 3, yPos)
+                    elseif zoneName == "Right" then
+                        local w = math.max(STAGE_W - (BOX_X + BOX_W + barPad + 6), 54)
+                        pill.Size = UDim2.fromOffset(w, lineStep - 1)
+                        pill.TextXAlignment = Enum.TextXAlignment.Left
+                        yPos = sideStartY + (idx - 1) * lineStep
+                        pill.Position = UDim2.fromOffset(BOX_X + BOX_W + barPad + 3, yPos)
+                    end
+
+                    table.insert(SlotMeta[zoneName], { Key = key, CenterY = yPos + lineStep * 0.5 })
+                    bindDraggable(pill, key)
+                    table.insert(DynamicItems, pill)
+                end
+            end
+        end
+    end
+
+    function UI.Preview.SyncVisibility()
+        local isVisuals = (CurrentTab == VisualsTab)
+        local isActorCat = (UI._ActiveEspCategory == "Player" or UI._ActiveEspCategory == "Npc")
+        local show = MainWindow.Visible and isVisuals and isActorCat
+        PreviewFrame.Visible = show
+        if show then
+            repositionPreview()
+            UI.Preview.Refresh()
+        end
+    end
+
+    Session.Bind(MainWindow:GetPropertyChangedSignal("AbsolutePosition"), repositionPreview)
+    table.insert(UI._OnChange, UI.Preview.Refresh)
+
+    Session.Bind(LockBtn.MouseButton1Click, function()
+        DragLocked = not DragLocked
+        LockBtn.Text = DragLocked and "Lock" or "Free"
+        LockBtn.TextColor3 = DragLocked and THEME.Accent or THEME.TextSecondary
+        lockStroke.Color = DragLocked and THEME.Accent or THEME.Border
+    end)
+
+    Session.Bind(ResetBtn.MouseButton1Click, function()
+        local isAI, cfg = getActivePreviewTarget()
+        cfg.Layout = createDefaultActorLayout(isAI)
+        UI.Preview.Refresh()
+        UI.Notify("Preview Layout Reset", (isAI and "NPC" or "Player") .. " ESP layout restored.", "info")
+    end)
+
+    Session.Bind(UserInputService.InputChanged, function(input: InputObject)
+        if not DraggingKey or input.UserInputType ~= Enum.UserInputType.MouseMovement then
+            return
+        end
+        local ma = getMouseAbs()
+        if DragGhost then
+            local pAbs = PopupLayer.AbsolutePosition
+            DragGhost.Position = UDim2.fromOffset(ma.X - pAbs.X - 39, ma.Y - pAbs.Y - 9)
+        end
+        local stPos = Stage.AbsolutePosition
+        local rel = Vector2.new(ma.X - stPos.X, ma.Y - stPos.Y)
+        if rel.X >= -18 and rel.X <= STAGE_W + 18 and rel.Y >= -18 and rel.Y <= STAGE_H + 18 then
+            local z, idx, lineY = resolveZoneFromPoint(rel)
+            HoverZone = z
+            HoverIndex = idx
+            updateStageZoneVisuals(z)
+            local zb = ZONE_BOUNDS[z]
+            InsertLine.Size = UDim2.fromOffset(math.min(zb.W - 8, 92), 2)
+            InsertLine.Position = UDim2.fromOffset(zb.X + math.max((zb.W - math.min(zb.W - 8, 92)) * 0.5, 4), math.clamp(lineY, zb.Y + 4, zb.Y + zb.H - 4))
+            InsertLine.Visible = true
+        else
+            HoverZone = nil
+            updateStageZoneVisuals(nil)
+            InsertLine.Visible = false
+        end
+    end)
+
+    Session.Bind(UserInputService.InputEnded, function(input: InputObject)
+        if not DraggingKey or input.UserInputType ~= Enum.UserInputType.MouseButton1 then
+            return
+        end
+        local key = DraggingKey
+        DraggingKey = nil
+        if DragGhost then
+            DragGhost:Destroy()
+            DragGhost = nil
+        end
+        updateStageZoneVisuals(nil)
+        InsertLine.Visible = false
+
+        if HoverZone then
+            local _, cfg = getActivePreviewTarget()
+            local layout = cfg.Layout
+            -- Remove from prior zone first, adjusting target index if moving down within same zone
+            for zName, list in pairs(layout) do
+                for i = #list, 1, -1 do
+                    if list[i] == key then
+                        table.remove(list, i)
+                        if zName == HoverZone and i < HoverIndex then
+                            HoverIndex -= 1
+                        end
+                    end
+                end
+            end
+            local destList = layout[HoverZone]
+            local clampedIdx = math.clamp(HoverIndex, 1, #destList + 1)
+            table.insert(destList, clampedIdx, key)
+            UI.Preview.Refresh()
+        end
+        HoverZone = nil
+    end)
+end
+
+-- ============================================================================
 -- 11. INPUT HANDLING & MAIN FRAME LOOP
 -- ============================================================================
 local WindowVisible = true
@@ -3972,6 +4725,9 @@ local function setMenuVisible(vis: boolean)
     MainWindow.Visible = vis
     if not vis then
         closeActivePopup()
+    end
+    if type(UI.Preview.SyncVisibility) == "function" then
+        UI.Preview.SyncVisibility()
     end
 end
 

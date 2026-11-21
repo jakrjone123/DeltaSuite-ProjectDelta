@@ -401,6 +401,9 @@ local function isModeActive(id: string, enabled: boolean, mode: string, bind: an
     if mode == "Always" then
         return true
     elseif mode == "Toggle" then
+        if typeof(bind) ~= "EnumItem" or bind == Enum.KeyCode.Unknown then
+            return ToggleStates[id] ~= false
+        end
         return ToggleStates[id] == true
     end
     if typeof(bind) ~= "EnumItem" or bind == Enum.KeyCode.Unknown then
@@ -421,6 +424,7 @@ local RangedWeaponsFolder: Folder? = ReplicatedStorage:FindFirstChild("RangedWea
 local ItemsListFolder: Folder? = ReplicatedStorage:FindFirstChild("ItemsList") :: Folder?
 
 local FactionRelations: any = nil
+local FunctionLibraryExt: any = nil
 do
     local modulesFolder = ReplicatedStorage:FindFirstChild("Modules")
     local frMod = modulesFolder and modulesFolder:FindFirstChild("FactionRelations")
@@ -428,6 +432,13 @@ do
         local ok, mod = pcall(require, frMod)
         if ok and type(mod) == "table" then
             FactionRelations = mod
+        end
+    end
+    local fleMod = modulesFolder and modulesFolder:FindFirstChild("FunctionLibraryExtension")
+    if fleMod and fleMod:IsA("ModuleScript") then
+        local ok, mod = pcall(require, fleMod)
+        if ok and type(mod) == "table" then
+            FunctionLibraryExt = mod
         end
     end
 end
@@ -484,7 +495,22 @@ function Delta.IsPlayerDowned(player: Player, model: Model?): boolean
 end
 
 local SquadMemberCache: { [string]: boolean } = {}
+local LocalClanCache: string? = nil
 local LastSquadScan = 0
+
+local function readPlayerClan(player: Player): string?
+    local rsPlayer = Delta.GetRSPlayer(player)
+    local journey = rsPlayer and rsPlayer:FindFirstChild("Status") and rsPlayer.Status:FindFirstChild("Journey")
+    local clanFolder = journey and journey:FindFirstChild("Clan")
+    if not clanFolder then
+        return nil
+    end
+    local cur = clanFolder:GetAttribute("CurrentClan")
+    if type(cur) == "string" and cur ~= "" then
+        return cur
+    end
+    return nil
+end
 
 local function refreshSquadCache()
     local now = os.clock()
@@ -493,6 +519,7 @@ local function refreshSquadCache()
     end
     LastSquadScan = now
     table.clear(SquadMemberCache)
+    LocalClanCache = readPlayerClan(LocalPlayer)
 
     if not ClansFolder then
         ClansFolder = ReplicatedStorage:FindFirstChild("Clans") :: Folder?
@@ -504,7 +531,8 @@ local function refreshSquadCache()
     local myTeamName = LocalPlayer.Name .. "'s team"
     for _, clan in ipairs(ClansFolder:GetChildren()) do
         if clan.Name == myTeamName or clan:FindFirstChild(LocalPlayer.Name) then
-            local ownerName = clan.Name:match("^(.+)'s team$")
+            local ownerAttr = clan:GetAttribute("Owner")
+            local ownerName = (type(ownerAttr) == "string" and ownerAttr) or clan.Name:match("^(.+)'s team$")
             if ownerName and ownerName ~= LocalPlayer.Name then
                 SquadMemberCache[ownerName] = true
             end
@@ -517,17 +545,37 @@ local function refreshSquadCache()
     end
 end
 
+function Delta.IsPlayerProtected(player: Player, model: Model?): boolean
+    if model and model:FindFirstChildOfClass("ForceField") then
+        return true
+    end
+    local rsPlayer = Delta.GetRSPlayer(player)
+    local gv = rsPlayer and rsPlayer:FindFirstChild("Status") and rsPlayer.Status:FindFirstChild("GameplayVariables")
+    if gv then
+        if gv:GetAttribute("GodMode") == true then
+            return true
+        end
+        if gv:GetAttribute("Spawned") == false then
+            return true
+        end
+    end
+    return false
+end
+
 function Delta.IsTeammate(player: Player): boolean
     if player == LocalPlayer then
+        return true
+    end
+    if LocalPlayer.Team ~= nil and player.Team == LocalPlayer.Team then
         return true
     end
     refreshSquadCache()
     if SquadMemberCache[player.Name] then
         return true
     end
-    if FactionRelations and type(FactionRelations.isAlly) == "function" then
-        local ok, ally = pcall(FactionRelations.isAlly, LocalPlayer, player)
-        if ok and ally == true then
+    if LocalClanCache then
+        local targetClan = readPlayerClan(player)
+        if targetClan and targetClan == LocalClanCache then
             return true
         end
     end
@@ -688,10 +736,34 @@ function Delta.IsLocalADS(): boolean
     return UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
 end
 
+-- Exact bullet origin used by Project Delta's Bullet module (accounts for Lean & Crouch offsets)
+function Delta.GetShotOrigin(): Vector3
+    if FunctionLibraryExt and type(FunctionLibraryExt.GetEstimatedCameraPosition) == "function" then
+        local ok, pos = pcall(FunctionLibraryExt.GetEstimatedCameraPosition, FunctionLibraryExt, LocalPlayer)
+        if ok and typeof(pos) == "Vector3" then
+            return pos
+        end
+    end
+    local cam = Workspace.CurrentCamera
+    return cam and cam.CFrame.Position or Vector3.zero
+end
+
 local OriginalAmmoSpread: { [Instance]: any } = {}
 
-function Delta.GetLocalBallistics(): { Velocity: number, Drop: number }
+function Delta.GetBallisticsForAmmo(ammoName: string?): ({ Velocity: number, Drop: number }, Instance?)
     local defaultVel, defaultDrop = 2200, 4.6
+    if ammoName and ammoName ~= "" and AmmoTypesFolder then
+        local ammoInst = AmmoTypesFolder:FindFirstChild(ammoName)
+        if ammoInst then
+            local vel = tonumber(ammoInst:GetAttribute("MuzzleVelocity")) or defaultVel
+            local drop = tonumber(ammoInst:GetAttribute("ProjectileDrop")) or defaultDrop
+            return { Velocity = vel, Drop = drop }, ammoInst
+        end
+    end
+    return { Velocity = defaultVel, Drop = defaultDrop }, nil
+end
+
+function Delta.GetLocalBallistics(): { Velocity: number, Drop: number }
     local char = LocalPlayer.Character
     local rsPlayer = Delta.GetRSPlayer(LocalPlayer)
     local gv = rsPlayer and rsPlayer:FindFirstChild("Status") and rsPlayer.Status:FindFirstChild("GameplayVariables")
@@ -710,7 +782,7 @@ function Delta.GetLocalBallistics(): { Velocity: number, Drop: number }
         end
     end
     if not tool then
-        return { Velocity = defaultVel, Drop = defaultDrop }
+        return { Velocity = 2200, Drop = 4.6 }
     end
 
     local ammoName: string? = nil
@@ -756,16 +828,8 @@ function Delta.GetLocalBallistics(): { Velocity: number, Drop: number }
         end
     end
 
-    if ammoName and AmmoTypesFolder then
-        local ammoInst = AmmoTypesFolder:FindFirstChild(ammoName)
-        if ammoInst then
-            local vel = tonumber(ammoInst:GetAttribute("MuzzleVelocity")) or defaultVel
-            local drop = tonumber(ammoInst:GetAttribute("ProjectileDrop")) or defaultDrop
-            return { Velocity = vel, Drop = drop }
-        end
-    end
-
-    return { Velocity = defaultVel, Drop = defaultDrop }
+    local ballistics = Delta.GetBallisticsForAmmo(ammoName)
+    return ballistics
 end
 
 local HITPART_CANDIDATES: { [string]: { string } } = {
@@ -810,7 +874,7 @@ function Delta.ResolveTargetPart(model: Model, mode: string, refScreenPos: Vecto
     return model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")
 end
 
--- Visibility raycast piercing transparent/non-colliding geometry & NoCollision folder
+-- Visibility raycast matching Project Delta WeaponRay + PassThrough / Glass / NoCollision piercing
 function Delta.IsPartVisible(targetModel: Model, targetPart: BasePart, originPos: Vector3): boolean
     local cam = Workspace.CurrentCamera
     local ignoreList: { Instance } = {}
@@ -828,11 +892,14 @@ function Delta.IsPartVisible(targetModel: Model, targetPart: BasePart, originPos
     local params = RaycastParams.new()
     params.FilterType = Enum.RaycastFilterType.Exclude
     params.IgnoreWater = true
+    pcall(function()
+        params.CollisionGroup = "WeaponRay"
+    end)
 
     local currentOrigin = originPos
     local destination = targetPart.Position
 
-    for _ = 1, 5 do
+    for _ = 1, 12 do
         params.FilterDescendantsInstances = ignoreList
         local deltaVec = destination - currentOrigin
         if deltaVec.Magnitude < 0.25 then
@@ -846,9 +913,16 @@ function Delta.IsPartVisible(targetModel: Model, targetPart: BasePart, originPos
         if hit:IsDescendantOf(targetModel) then
             return true
         end
-        if hit:IsA("BasePart") and (hit.Transparency >= 0.9 or not hit.CanCollide) then
+        local realParent = hit:FindFirstChild("RealParent")
+        if realParent and realParent:IsA("ObjectValue") and realParent.Value and (realParent.Value == targetModel or realParent.Value:IsDescendantOf(targetModel)) then
+            return true
+        end
+        local isPassThrough = hit:GetAttribute("PassThrough") ~= nil
+            or hit:GetAttribute("Glass") ~= nil
+            or (hit:IsA("BasePart") and (hit.Material == Enum.Material.Glass or hit.Transparency >= 0.9 or not hit.CanCollide))
+        if isPassThrough then
             table.insert(ignoreList, hit)
-            currentOrigin = res.Position + deltaVec.Unit * 0.08
+            currentOrigin = res.Position + deltaVec.Unit * 0.06
         else
             return false
         end
@@ -856,31 +930,35 @@ function Delta.IsPartVisible(targetModel: Model, targetPart: BasePart, originPos
     return false
 end
 
-function Delta.PredictAimPosition(originPos: Vector3, targetPart: BasePart, useLead: boolean, useDrop: boolean): Vector3
+function Delta.PredictAimPosition(
+    originPos: Vector3,
+    targetPart: BasePart,
+    useLead: boolean,
+    useDrop: boolean,
+    ballisticsOverride: { Velocity: number, Drop: number }?
+): Vector3
     local pos = targetPart.Position
     if not useLead and not useDrop then
         return pos
     end
-    local ballistics = Delta.GetLocalBallistics()
+    local ballistics = ballisticsOverride or Delta.GetLocalBallistics()
     local speed = math.max(ballistics.Velocity, 100)
-    local dist = (pos - originPos).Magnitude
-    local travelTime = dist / speed
+    local vel = useLead and targetPart.AssemblyLinearVelocity or Vector3.zero
+    if vel.Magnitude < 0.5 then
+        vel = Vector3.zero
+    end
+    -- Project Delta Bullet.onStep applies fixed Vector3(0, -70, 0) * dt without drag
+    local gravity = useDrop and (70 * (ballistics.Drop / 4.6)) or 0
 
-    -- Second iteration refines travel time against predicted position
-    if useLead then
-        local vel = targetPart.AssemblyLinearVelocity
-        local firstPred = pos + vel * travelTime
-        travelTime = (firstPred - originPos).Magnitude / speed
-        pos = pos + vel * travelTime
+    local t = (pos - originPos).Magnitude / speed
+    local aimPos = pos
+    for _ = 1, 3 do
+        local future = pos + vel * t + Vector3.new(0, 0.5 * gravity * t * t, 0)
+        t = (future - originPos).Magnitude / speed
+        aimPos = future
     end
 
-    if useDrop then
-        -- Baseline Project Delta simulation step uses ~70 u/s^2 scaled around ProjectileDrop=4.6
-        local gravity = 70 * (ballistics.Drop / 4.6)
-        pos = pos + Vector3.new(0, 0.5 * gravity * travelTime * travelTime, 0)
-    end
-
-    return pos
+    return aimPos
 end
 
 -- ============================================================================
@@ -1121,6 +1199,7 @@ function Targeting.FindBestTarget(opts: {
     TargetAI: boolean,
     UseFOV: boolean,
     MaxDistance: number,
+    RayOrigin: Vector3?,
 }): TargetResult?
     local cam = Workspace.CurrentCamera
     if not cam then
@@ -1130,6 +1209,7 @@ function Targeting.FindBestTarget(opts: {
     local aim2D = Targeting.GetAimOrigin2D()
     local fovRadius = opts.UseFOV and Targeting.GetEffectiveFOVRadius() or math.huge
     local camPos = cam.CFrame.Position
+    local visOrigin = opts.RayOrigin or camPos
 
     local best: TargetResult? = nil
     local bestScore = fovRadius
@@ -1146,6 +1226,9 @@ function Targeting.FindBestTarget(opts: {
                 continue
             end
             if opts.IgnoreDowned and Delta.IsPlayerDowned(entry.Player, model) then
+                continue
+            end
+            if Delta.IsPlayerProtected(entry.Player, model) then
                 continue
             end
         end
@@ -1176,7 +1259,7 @@ function Targeting.FindBestTarget(opts: {
             continue
         end
 
-        if opts.VisibleCheck and not Delta.IsPartVisible(model, part, camPos) then
+        if opts.VisibleCheck and not Delta.IsPartVisible(model, part, visOrigin) then
             continue
         end
 
@@ -1491,6 +1574,21 @@ do
 end
 
 -- 6C. Silent Aim hook on Bullet.CreateBullet
+local SilentRng = Random.new()
+
+local function findSilentAimTarget(shotOrigin: Vector3): TargetResult?
+    return Targeting.FindBestTarget({
+        HitPart = Config.SilentAim.HitPart,
+        TeamCheck = Config.SilentAim.TeamCheck,
+        VisibleCheck = Config.SilentAim.VisibleCheck,
+        IgnoreDowned = Config.SilentAim.IgnoreDowned,
+        TargetAI = Config.SilentAim.TargetAI,
+        UseFOV = Config.SilentAim.UseFOV,
+        MaxDistance = 4000, -- Project Delta Bullet.onStep max range
+        RayOrigin = shotOrigin,
+    })
+end
+
 do
     local modulesFolder = ReplicatedStorage:FindFirstChild("Modules")
     local fpsInst = modulesFolder and modulesFolder:FindFirstChild("FPS")
@@ -1503,45 +1601,59 @@ do
         local function wrappedCreateBullet(...)
             local args = table.pack(...)
             local restoredParts: { { Part: BasePart, PrevCF: CFrame } } = {}
+            local restoredAmmo: { Inst: Instance, PrevDev: any }? = nil
 
             if Session.IsAlive() and isModeActive("SilentAim", Config.SilentAim.Enabled, Config.SilentAim.Mode, Config.SilentAim.Key) then
-                local chance = Config.SilentAim.HitChance
-                if chance >= 100 or math.random(1, 100) <= chance then
-                    local target = Targeting.FindBestTarget({
-                        HitPart = Config.SilentAim.HitPart,
-                        TeamCheck = Config.SilentAim.TeamCheck,
-                        VisibleCheck = Config.SilentAim.VisibleCheck,
-                        IgnoreDowned = Config.SilentAim.IgnoreDowned,
-                        TargetAI = Config.SilentAim.TargetAI,
-                        UseFOV = Config.SilentAim.UseFOV,
-                        MaxDistance = Config.Aimbot.MaxDistance,
-                    })
+                local chance = math.clamp(Config.SilentAim.HitChance, 0, 100)
+                if chance >= 100 or SilentRng:NextInteger(1, 100) <= chance then
+                    local shotOrigin = Delta.GetShotOrigin()
+                    local target = findSilentAimTarget(shotOrigin)
 
                     if target then
-                        local cam = Workspace.CurrentCamera
-                        local camLook = cam and cam.CFrame.LookVector or Vector3.new(0, 0, -1)
-
-                        for i = 1, args.n do
-                            local arg = args[i]
-                            if typeof(arg) == "Instance" and arg:IsA("BasePart") then
-                                local lname = arg.Name:lower()
-                                if lname:find("aim") or lname:find("muzzle") or lname:find("barrel") or lname:find("fire") then
-                                    local origin = arg.Position
-                                    local aimPos = Delta.PredictAimPosition(origin, target.Part, Config.SilentAim.Prediction, Config.SilentAim.DropComp)
-                                    table.insert(restoredParts, { Part = arg, PrevCF = arg.CFrame })
-                                    arg.CFrame = CFrame.lookAt(origin, aimPos)
-                                end
-                            elseif typeof(arg) == "CFrame" then
-                                -- Redirect CFrame argument aligned with camera/viewModel aim direction
-                                if arg.LookVector:Dot(camLook) > 0.75 then
-                                    local origin = arg.Position
-                                    local aimPos = Delta.PredictAimPosition(origin, target.Part, Config.SilentAim.Prediction, Config.SilentAim.DropComp)
-                                    args[i] = CFrame.lookAt(origin, aimPos)
-                                end
-                            end
+                        local ammoArg = (args.n >= 7 and type(args[7]) == "string") and args[7] or nil
+                        local ammoBallistics, ammoInst = Delta.GetBallisticsForAmmo(ammoArg)
+                        if not ammoInst then
+                            ammoBallistics = Delta.GetLocalBallistics()
                         end
 
-                        ActiveLockedTarget = target
+                        local usePred = Config.SilentAim.Prediction
+                        local aimPos = Delta.PredictAimPosition(shotOrigin, target.Part, usePred, usePred, ammoBallistics)
+                        local aimVec = aimPos - shotOrigin
+
+                        if aimVec.Magnitude > 1e-4 then
+                            local aimUnit = aimVec.Unit
+                            local cam = Workspace.CurrentCamera
+                            local camLook = cam and cam.CFrame.LookVector or aimUnit
+
+                            -- Prevent fireBullet random cone dispersion from ruining guaranteed Silent Aim shots
+                            if ammoInst and not Config.WeaponMods.NoSpread then
+                                local prevDev = ammoInst:GetAttribute("AccuracyDeviation")
+                                if type(prevDev) == "number" and prevDev > 0 then
+                                    restoredAmmo = { Inst = ammoInst, PrevDev = prevDev }
+                                    ammoInst:SetAttribute("AccuracyDeviation", 0)
+                                end
+                            end
+
+                            -- Redirect arg #5 (Project Delta CreateBullet AimPart) and fallback aim/muzzle CFrames along exact shotOrigin->aimPos ray
+                            local touched: { [BasePart]: boolean } = {}
+                            for i = 1, args.n do
+                                local arg = args[i]
+                                if typeof(arg) == "Instance" and arg:IsA("BasePart") and not touched[arg] then
+                                    local lname = arg.Name:lower()
+                                    if i == 5 or lname:find("aim") or lname:find("muzzle") or lname:find("barrel") or lname:find("fire") then
+                                        touched[arg] = true
+                                        table.insert(restoredParts, { Part = arg, PrevCF = arg.CFrame })
+                                        arg.CFrame = CFrame.lookAt(arg.Position, arg.Position + aimUnit)
+                                    end
+                                elseif typeof(arg) == "CFrame" then
+                                    if i == 5 or arg.LookVector:Dot(camLook) > 0.25 then
+                                        args[i] = CFrame.lookAt(arg.Position, arg.Position + aimUnit)
+                                    end
+                                end
+                            end
+
+                            ActiveLockedTarget = target
+                        end
                     end
                 end
             end
@@ -1551,6 +1663,9 @@ do
                 if rec.Part.Parent then
                     rec.Part.CFrame = rec.PrevCF
                 end
+            end
+            if restoredAmmo and restoredAmmo.Inst.Parent and not Config.WeaponMods.NoSpread then
+                restoredAmmo.Inst:SetAttribute("AccuracyDeviation", restoredAmmo.PrevDev)
             end
             if not results[1] then
                 error(results[2])
@@ -1575,7 +1690,9 @@ local function stepAimbot(dt: number)
     local active = isModeActive("Aimbot", Config.Aimbot.Enabled, Config.Aimbot.Mode, Config.Aimbot.Key)
     if not active then
         mouseAccumX, mouseAccumY = 0, 0
-        if not isModeActive("SilentAim", Config.SilentAim.Enabled, Config.SilentAim.Mode, Config.SilentAim.Key) then
+        if isModeActive("SilentAim", Config.SilentAim.Enabled, Config.SilentAim.Mode, Config.SilentAim.Key) then
+            ActiveLockedTarget = findSilentAimTarget(Delta.GetShotOrigin())
+        else
             ActiveLockedTarget = nil
         end
         return
@@ -3751,9 +3868,18 @@ do
     UI.AddColorPicker(secFov, "FOV Color", function() return Config.Aimbot.FOVColor end, function(c) Config.Aimbot.FOVColor = c end)
 
     local secSilent = UI.AddSection(CombatTab, "Right", "Silent Aim")
-    UI.AddToggle(secSilent, "Enable Silent Aim", function() return Config.SilentAim.Enabled end, function(v) Config.SilentAim.Enabled = v end,
-        function() return Config.SilentAim.Key end, function(k) Config.SilentAim.Key = k end)
-    UI.AddDropdown(secSilent, "Silent Mode", { "Always", "Hold", "Toggle" }, function() return Config.SilentAim.Mode end, function(v) Config.SilentAim.Mode = v end)
+    UI.AddToggle(secSilent, "Enable Silent Aim", function() return Config.SilentAim.Enabled end, function(v)
+        Config.SilentAim.Enabled = v
+        if v then
+            ToggleStates.SilentAim = true
+        end
+    end, function() return Config.SilentAim.Key end, function(k) Config.SilentAim.Key = k end)
+    UI.AddDropdown(secSilent, "Silent Mode", { "Always", "Hold", "Toggle" }, function() return Config.SilentAim.Mode end, function(v)
+        Config.SilentAim.Mode = v
+        if v == "Toggle" then
+            ToggleStates.SilentAim = true
+        end
+    end)
     UI.AddDropdown(secSilent, "Target Hitbox", { "FaceHitBox", "Head", "HeadTopHitBox", "UpperTorso", "HumanoidRootPart", "Closest" },
         function() return Config.SilentAim.HitPart end, function(v) Config.SilentAim.HitPart = v end)
     UI.AddSlider(secSilent, "Hit Chance", 10, 100, 5, "%", function() return Config.SilentAim.HitChance end, function(v) Config.SilentAim.HitChance = v end)
@@ -4766,17 +4892,35 @@ Session.Bind(UserInputService.InputBegan, function(input: InputObject, gameProce
         return
     end
 
-    if Config.Aimbot.Enabled and Config.Aimbot.Mode == "Toggle" and code == Config.Aimbot.Key then
-        ToggleStates.Aimbot = not ToggleStates.Aimbot
-        UI.Notify("Aimbot", ToggleStates.Aimbot and "Engaged" or "Standby", ToggleStates.Aimbot and "success" or "info")
+    if code ~= Enum.KeyCode.Unknown and code == Config.Aimbot.Key then
+        if Config.Aimbot.Enabled and Config.Aimbot.Mode == "Toggle" then
+            ToggleStates.Aimbot = not (ToggleStates.Aimbot ~= false)
+            UI.Notify("Aimbot", ToggleStates.Aimbot and "Engaged" or "Standby", ToggleStates.Aimbot and "success" or "info")
+        elseif Config.Aimbot.Mode == "Always" then
+            Config.Aimbot.Enabled = not Config.Aimbot.Enabled
+            UI.RefreshAll()
+            UI.Notify("Aimbot", Config.Aimbot.Enabled and "Enabled" or "Disabled", Config.Aimbot.Enabled and "success" or "info")
+        end
     end
-    if Config.SilentAim.Enabled and Config.SilentAim.Mode == "Toggle" and code == Config.SilentAim.Key then
-        ToggleStates.SilentAim = not ToggleStates.SilentAim
-        UI.Notify("Silent Aim", ToggleStates.SilentAim and "Engaged" or "Standby", ToggleStates.SilentAim and "success" or "info")
+    if code ~= Enum.KeyCode.Unknown and code == Config.SilentAim.Key then
+        if Config.SilentAim.Enabled and Config.SilentAim.Mode == "Toggle" then
+            ToggleStates.SilentAim = not (ToggleStates.SilentAim ~= false)
+            UI.Notify("Silent Aim", ToggleStates.SilentAim and "Engaged" or "Standby", ToggleStates.SilentAim and "success" or "info")
+        elseif Config.SilentAim.Mode == "Always" then
+            Config.SilentAim.Enabled = not Config.SilentAim.Enabled
+            UI.RefreshAll()
+            UI.Notify("Silent Aim", Config.SilentAim.Enabled and "Enabled" or "Disabled", Config.SilentAim.Enabled and "success" or "info")
+        end
     end
-    if Config.TriggerBot.Enabled and Config.TriggerBot.Mode == "Toggle" and code == Config.TriggerBot.Key then
-        ToggleStates.TriggerBot = not ToggleStates.TriggerBot
-        UI.Notify("TriggerBot", ToggleStates.TriggerBot and "Engaged" or "Standby", ToggleStates.TriggerBot and "success" or "info")
+    if code ~= Enum.KeyCode.Unknown and code == Config.TriggerBot.Key then
+        if Config.TriggerBot.Enabled and Config.TriggerBot.Mode == "Toggle" then
+            ToggleStates.TriggerBot = not (ToggleStates.TriggerBot ~= false)
+            UI.Notify("TriggerBot", ToggleStates.TriggerBot and "Engaged" or "Standby", ToggleStates.TriggerBot and "success" or "info")
+        elseif Config.TriggerBot.Mode == "Always" then
+            Config.TriggerBot.Enabled = not Config.TriggerBot.Enabled
+            UI.RefreshAll()
+            UI.Notify("TriggerBot", Config.TriggerBot.Enabled and "Enabled" or "Disabled", Config.TriggerBot.Enabled and "success" or "info")
+        end
     end
 end)
 

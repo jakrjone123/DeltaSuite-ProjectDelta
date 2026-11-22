@@ -423,6 +423,7 @@ local function createDefaultConfig()
             TargetHUD = true,
             Notifications = true,
             FontSize = 13,
+            MenuTransparency = 22, -- 0..45 (%) glass UI translucency
         },
     }
 end
@@ -723,6 +724,26 @@ local function readNumericStat(sources: { Instance? }, keys: { string }): number
     return nil
 end
 
+function Delta.GetUACReportCount(rsPlayer: Instance?): number
+    local status = rsPlayer and rsPlayer:FindFirstChild("Status")
+    local uac = status and status:FindFirstChild("UAC")
+    local reportsFolder = uac and uac:FindFirstChild("Reports")
+    if not reportsFolder then
+        return 0
+    end
+    local sum = 0
+    for _, val in pairs(reportsFolder:GetAttributes()) do
+        if type(val) == "number" then
+            sum += val
+        end
+    end
+    local kids = #reportsFolder:GetChildren()
+    if kids > sum then
+        sum = kids
+    end
+    return sum
+end
+
 function Delta.GetPlayerMeta(player: Player): (string?, number?)
     local cached = PlayerMetaCache[player]
     local now = os.clock()
@@ -739,7 +760,7 @@ function Delta.GetPlayerMeta(player: Player): (string?, number?)
     local sources: { Instance? } = { wipeStats, journey, status, rsPlayer, player, leader, statsF }
 
     local kdrStr: string? = nil
-    local reports: number? = nil
+    local reports: number = Delta.GetUACReportCount(rsPlayer)
 
     -- Check ReplicatedStorage.ReportList (MostWanted & Recent use "<PlayerName>_<UserId>" with KDR & TotalFlags)
     local reportList = ReplicatedStorage:FindFirstChild("ReportList")
@@ -761,7 +782,7 @@ function Delta.GetPlayerMeta(player: Player): (string?, number?)
             end
             local flags = repFolder:GetAttribute("TotalFlags")
             if type(flags) == "number" then
-                reports = flags
+                reports = math.max(reports, flags)
             end
         end
     end
@@ -778,8 +799,9 @@ function Delta.GetPlayerMeta(player: Player): (string?, number?)
         end
     end
 
-    if not reports then
-        reports = readNumericStat(sources, { "TotalFlags", "Reports", "ReportCount", "TotalReports" })
+    local statRep = readNumericStat(sources, { "TotalFlags", "Reports", "ReportCount", "TotalReports" })
+    if statRep then
+        reports = math.max(reports, statRep)
     end
 
     PlayerMetaCache[player] = { KDR = kdrStr, Reports = reports, UpdatedAt = now }
@@ -3726,7 +3748,8 @@ local function readPlayerReportStats(player: Player): (number, number, number)
         return cached.Flags, cached.HSR, cached.KDR
     end
 
-    local flags, hsr, kdr = 0, 0, 0
+    local rsPlr = Delta.GetRSPlayer(player)
+    local flags, hsr, kdr = Delta.GetUACReportCount(rsPlr), 0, 0
     local reportList = ReplicatedStorage:FindFirstChild("ReportList")
     if reportList then
         local repKey = player.Name .. "_" .. tostring(player.UserId)
@@ -3736,7 +3759,7 @@ local function readPlayerReportStats(player: Player): (number, number, number)
             or (rec and rec:FindFirstChild(repKey))
             or reportList:FindFirstChild(repKey)
         if repFolder then
-            flags = tonumber(repFolder:GetAttribute("TotalFlags")) or 0
+            flags = math.max(flags, tonumber(repFolder:GetAttribute("TotalFlags")) or 0)
             local rawHsr = repFolder:GetAttribute("HSR")
             hsr = type(rawHsr) == "number" and rawHsr or (tonumber(tostring(rawHsr or ""):match("[%d%.]+")) or 0)
             local rawKdr = repFolder:GetAttribute("KDR")
@@ -3744,6 +3767,18 @@ local function readPlayerReportStats(player: Player): (number, number, number)
                 kdr = rawKdr
             elseif type(rawKdr) == "string" then
                 kdr = tonumber(rawKdr:match("/([%d%.]+)$") or rawKdr) or 0
+            end
+        end
+    end
+    if kdr == 0 and rsPlr then
+        local st = rsPlr:FindFirstChild("Status")
+        local jr = st and st:FindFirstChild("Journey")
+        local ws = jr and jr:FindFirstChild("WipeStatistics")
+        if ws then
+            local kp = tonumber(ws:GetAttribute("K_PVP")) or 0
+            local dp = tonumber(ws:GetAttribute("D_PVP")) or 0
+            if kp >= 10 then
+                kdr = kp / math.max(dp, 1)
             end
         end
     end
@@ -4055,28 +4090,77 @@ function Misc.SortVaultByValue()
 end
 
 function Misc.InitListeners()
-    -- Watch LocalPlayer UAC Reports asynchronously
-    task.spawn(function()
-        local deadline = os.clock() + 20
-        local reports: Instance? = nil
-        while Session.IsAlive() and os.clock() < deadline do
-            local rsPlr = Delta.GetRSPlayer(LocalPlayer)
-            local st = rsPlr and rsPlr:FindFirstChild("Status")
-            local uac = st and st:FindFirstChild("UAC")
-            reports = uac and uac:FindFirstChild("Reports")
-            if reports then
-                break
+    -- Watch every player's live Status.UAC.Reports attributes ("0".."4") & BeingBanned
+    local function attachPlayerUACWatcher(plr: Player)
+        task.spawn(function()
+            local deadline = os.clock() + 18
+            local rsPlr: Instance? = nil
+            local uac: Instance? = nil
+            local reports: Instance? = nil
+            while Session.IsAlive() and plr.Parent and os.clock() < deadline do
+                rsPlr = Delta.GetRSPlayer(plr)
+                local st = rsPlr and rsPlr:FindFirstChild("Status")
+                uac = st and st:FindFirstChild("UAC")
+                reports = uac and uac:FindFirstChild("Reports")
+                if reports and uac then
+                    break
+                end
+                task.wait(0.75)
             end
-            task.wait(0.75)
-        end
-        if reports and Session.IsAlive() then
-            Session.Bind(reports.ChildAdded, function(rep)
-                if Config.Misc.ReportNotify and Config.Misc.ReportAlertSelf then
-                    Misc._SendNotify("Report Alert", "New self UAC flag recorded: " .. rep.Name, "danger")
+            if not (reports and uac and rsPlr and plr.Parent and Session.IsAlive()) or Misc._WatchedReports[reports] then
+                return
+            end
+            Misc._WatchedReports[reports] = true
+            local lastSum = Delta.GetUACReportCount(rsPlr)
+
+            local function onReportChanged()
+                local curSum = Delta.GetUACReportCount(rsPlr)
+                if curSum > lastSum then
+                    local added = curSum - lastSum
+                    lastSum = curSum
+                    PlayerMetaCache[plr] = nil
+                    Misc._ReportStatsCache[plr] = nil
+                    Misc.EvaluatePlayerDetect(plr)
+                    if Config.Misc.ReportNotify then
+                        if plr == LocalPlayer and Config.Misc.ReportAlertSelf then
+                            Misc._SendNotify("Report Alert", string.format("Self UAC flag (+%d | %d total)", added, curSum), "danger")
+                        elseif plr ~= LocalPlayer and Config.Misc.ReportAlertServer then
+                            Misc._SendNotify("Server Report", string.format("%s flagged (+%d | %d total)", plr.DisplayName, added, curSum), "warn")
+                        end
+                    end
+                elseif curSum ~= lastSum then
+                    lastSum = curSum
+                    PlayerMetaCache[plr] = nil
+                    Misc._ReportStatsCache[plr] = nil
+                end
+            end
+
+            Session.Bind(reports.AttributeChanged, onReportChanged)
+            Session.Bind(reports.ChildAdded, onReportChanged)
+            Session.Bind(uac:GetAttributeChangedSignal("BeingBanned"), function()
+                if uac:GetAttribute("BeingBanned") == true and Config.Misc.ReportNotify then
+                    if plr == LocalPlayer and Config.Misc.ReportAlertSelf then
+                        Misc._SendNotify("UAC Alert", "Your account entered UAC BeingBanned state!", "danger")
+                    elseif plr ~= LocalPlayer and Config.Misc.ReportAlertServer then
+                        Misc._SendNotify("UAC Ban Flag", plr.DisplayName .. " flagged BeingBanned!", "warn")
+                    end
                 end
             end)
-        end
-    end)
+        end)
+    end
+
+    -- Also listen to ReportNotification RemoteEvent if server pushes notifications
+    local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+    local repNotif = remotes and remotes:FindFirstChild("ReportNotification")
+    if repNotif and repNotif:IsA("RemoteEvent") then
+        Session.Bind(repNotif.OnClientEvent, function(...)
+            if Config.Misc.ReportNotify and Config.Misc.ReportAlertSelf then
+                local a = ...
+                local detail = type(a) == "string" and a or "Server UAC report notification received"
+                Misc._SendNotify("Report Notification", detail, "warn")
+            end
+        end)
+    end
 
     -- Watch ReplicatedStorage.ReportList.Recent
     local function attachRecentEntry(entry: Instance)
@@ -4118,14 +4202,16 @@ function Misc.InitListeners()
         end)
     end
 
-    -- Scan current players asynchronously + bind PlayerAdded/Removing for Join Notify & Detect
+    -- Scan current players asynchronously + bind PlayerAdded/Removing for UAC, Join Notify & Detect
     for _, plr in ipairs(Players:GetPlayers()) do
+        attachPlayerUACWatcher(plr)
         if plr ~= LocalPlayer then
             ensurePlayerRoleFetched(plr)
         end
     end
 
     Session.Bind(Players.PlayerAdded, function(plr: Player)
+        attachPlayerUACWatcher(plr)
         if plr == LocalPlayer then
             return
         end
@@ -4207,6 +4293,296 @@ Session.OnStop(function()
         pcall(function() Combat._SilentDot:Remove() end)
     end
 end)
+
+-- ============================================================================
+-- 8C. EXECUTOR CONFIG MANAGER (JSON SAVE / LOAD / AUTOLOAD)
+-- ============================================================================
+local ConfigMgr = {
+    _Dir = "DeltaSuite",
+    _CfgDir = "DeltaSuite/configs",
+    _AutoFile = "DeltaSuite/autoload.txt",
+    _Selected = "default",
+    _InputName = "default",
+    _Http = game:GetService("HttpService"),
+    _ApplyUI = nil :: (() -> ())?,
+}
+
+;(function()
+local function sanitizeConfigName(name: string?): string
+    local clean = tostring(name or ""):gsub("[^%w%-%_%. ]", ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if clean == "" then
+        return "default"
+    end
+    return clean
+end
+
+local function hasExecutorFS(): boolean
+    return type(writefile) == "function" and type(readfile) == "function" and type(isfile) == "function"
+end
+
+local function ensureConfigFolders()
+    if type(isfolder) == "function" and type(makefolder) == "function" then
+        if not isfolder(ConfigMgr._Dir) then
+            pcall(makefolder, ConfigMgr._Dir)
+        end
+        if not isfolder(ConfigMgr._CfgDir) then
+            pcall(makefolder, ConfigMgr._CfgDir)
+        end
+    end
+end
+
+local function getMemConfigStore(): { [string]: string }
+    local store = rawget(Env, "__DeltaSuiteSavedConfigs")
+    if type(store) ~= "table" then
+        store = {}
+        Env.__DeltaSuiteSavedConfigs = store
+    end
+    return store
+end
+
+local function serializeValue(val: any): any
+    local t = typeof(val)
+    if t == "Color3" then
+        return { __t = "Color3", r = val.R, g = val.G, b = val.B }
+    elseif t == "EnumItem" then
+        local enumName = tostring(val.EnumType):match("([^%.]+)$") or "KeyCode"
+        return { __t = "EnumItem", e = enumName, n = val.Name }
+    elseif type(val) == "table" then
+        local out: { [any]: any } = {}
+        for k, v in pairs(val) do
+            out[k] = serializeValue(v)
+        end
+        return out
+    elseif type(val) == "boolean" or type(val) == "number" or type(val) == "string" then
+        return val
+    end
+    return nil
+end
+
+local function deserializeValue(val: any, template: any): any
+    if type(val) == "table" then
+        if val.__t == "Color3" and type(val.r) == "number" and type(val.g) == "number" and type(val.b) == "number" then
+            return Color3.new(val.r, val.g, val.b)
+        elseif val.__t == "EnumItem" and type(val.e) == "string" and type(val.n) == "string" then
+            local ok, item = pcall(function()
+                return (Enum :: any)[val.e][val.n]
+            end)
+            if ok and typeof(item) == "EnumItem" then
+                return item
+            end
+            return template
+        end
+    end
+    return val
+end
+
+local function mergeConfigTable(dst: { [any]: any }, src: { [any]: any })
+    for k, tmpl in pairs(dst) do
+        local raw = src[k]
+        if raw ~= nil then
+            if type(tmpl) == "table" and type(raw) == "table" and raw.__t == nil then
+                if #tmpl > 0 and #raw > 0 then
+                    local nextArr = {}
+                    for _, elem in ipairs(raw) do
+                        table.insert(nextArr, elem)
+                    end
+                    dst[k] = nextArr
+                else
+                    mergeConfigTable(tmpl, raw)
+                end
+            else
+                local decoded = deserializeValue(raw, tmpl)
+                if typeof(decoded) == typeof(tmpl) then
+                    dst[k] = decoded
+                end
+            end
+        end
+    end
+end
+
+function ConfigMgr.GetAutoLoad(): string?
+    if hasExecutorFS() and isfile(ConfigMgr._AutoFile) then
+        local ok, txt = pcall(readfile, ConfigMgr._AutoFile)
+        if ok and type(txt) == "string" then
+            local clean = txt:gsub("^%s+", ""):gsub("%s+$", "")
+            if clean ~= "" then
+                return clean
+            end
+        end
+    end
+    local memAuto = rawget(Env, "__DeltaSuiteAutoConfig")
+    if type(memAuto) == "string" and memAuto ~= "" then
+        return memAuto
+    end
+    return nil
+end
+
+function ConfigMgr.SetAutoLoad(name: string?)
+    if name and name ~= "" then
+        local clean = sanitizeConfigName(name)
+        Env.__DeltaSuiteAutoConfig = clean
+        if hasExecutorFS() then
+            ensureConfigFolders()
+            pcall(writefile, ConfigMgr._AutoFile, clean)
+        end
+    else
+        Env.__DeltaSuiteAutoConfig = nil
+        if hasExecutorFS() and type(delfile) == "function" and isfile(ConfigMgr._AutoFile) then
+            pcall(delfile, ConfigMgr._AutoFile)
+        elseif hasExecutorFS() and isfile(ConfigMgr._AutoFile) then
+            pcall(writefile, ConfigMgr._AutoFile, "")
+        end
+    end
+end
+
+function ConfigMgr.List(): { string }
+    local seen: { [string]: boolean } = { default = true }
+    local list: { string } = { "default" }
+    local function push(n: string)
+        local c = sanitizeConfigName(n)
+        if c ~= "" and not seen[c] then
+            seen[c] = true
+            table.insert(list, c)
+        end
+    end
+
+    if hasExecutorFS() and type(listfiles) == "function" then
+        ensureConfigFolders()
+        local ok, files = pcall(listfiles, ConfigMgr._CfgDir)
+        if ok and type(files) == "table" then
+            for _, fPath in ipairs(files) do
+                if type(fPath) == "string" then
+                    local stem = fPath:match("([^/\\]+)%.json$")
+                    if stem then
+                        push(stem)
+                    end
+                end
+            end
+        end
+    end
+    for k in pairs(getMemConfigStore()) do
+        push(k)
+    end
+    if ConfigMgr._Selected ~= "" then
+        push(ConfigMgr._Selected)
+    end
+    table.sort(list, function(a, b)
+        if a == "default" then return true end
+        if b == "default" then return false end
+        return a:lower() < b:lower()
+    end)
+    return list
+end
+
+function ConfigMgr.Save(name: string): boolean
+    local clean = sanitizeConfigName(name)
+    ConfigMgr._Selected = clean
+    ConfigMgr._InputName = clean
+    local okEnc, encoded = pcall(function()
+        return ConfigMgr._Http:JSONEncode(serializeValue(Config))
+    end)
+    if not okEnc or type(encoded) ~= "string" then
+        Misc._SendNotify("Config Error", "Failed to serialize configuration.", "danger", true)
+        return false
+    end
+
+    getMemConfigStore()[clean] = encoded
+    local savedDisk = false
+    if hasExecutorFS() then
+        ensureConfigFolders()
+        savedDisk = pcall(writefile, ConfigMgr._CfgDir .. "/" .. clean .. ".json", encoded)
+    end
+    Misc._SendNotify(
+        "Config Saved",
+        string.format("Saved '%s'%s", clean, savedDisk and " (executor storage)" or " (memory)"),
+        "success",
+        true
+    )
+    return true
+end
+
+function ConfigMgr.Load(name: string, quiet: boolean?): boolean
+    local clean = sanitizeConfigName(name)
+    local rawJson: string? = nil
+    local filePath = ConfigMgr._CfgDir .. "/" .. clean .. ".json"
+    if hasExecutorFS() and isfile(filePath) then
+        local okRead, txt = pcall(readfile, filePath)
+        if okRead and type(txt) == "string" and txt ~= "" then
+            rawJson = txt
+        end
+    end
+    if not rawJson then
+        rawJson = getMemConfigStore()[clean]
+    end
+    if not rawJson then
+        if not quiet then
+            Misc._SendNotify("Config Load", string.format("Profile '%s' not found.", clean), "warn", true)
+        end
+        return false
+    end
+
+    local okDec, decoded = pcall(function()
+        return ConfigMgr._Http:JSONDecode(rawJson :: string)
+    end)
+    if not okDec or type(decoded) ~= "table" then
+        if not quiet then
+            Misc._SendNotify("Config Error", "Corrupt JSON in '" .. clean .. "'.", "danger", true)
+        end
+        return false
+    end
+
+    local fresh = createDefaultConfig()
+    mergeConfigTable(fresh, decoded)
+    fresh.Misc.PanicMode = false
+    for k, v in pairs(fresh) do
+        Config[k] = v
+    end
+    table.clear(ToggleStates)
+    table.clear(Misc._NotifiedDetect)
+    Misc._LastPanic = false
+    ConfigMgr._Selected = clean
+    ConfigMgr._InputName = clean
+
+    Misc.RestoreDoors()
+    Misc.RestoreScreenEffects()
+    Combat.ApplyWeaponMods()
+    World.Step(false)
+    if ConfigMgr._ApplyUI then
+        ConfigMgr._ApplyUI()
+    end
+    if not quiet then
+        Misc._SendNotify("Config Loaded", string.format("Loaded profile '%s'", clean), "success", true)
+    end
+    return true
+end
+
+function ConfigMgr.Delete(name: string): boolean
+    local clean = sanitizeConfigName(name)
+    getMemConfigStore()[clean] = nil
+    local filePath = ConfigMgr._CfgDir .. "/" .. clean .. ".json"
+    if hasExecutorFS() and type(delfile) == "function" and isfile(filePath) then
+        pcall(delfile, filePath)
+    end
+    if ConfigMgr.GetAutoLoad() == clean then
+        ConfigMgr.SetAutoLoad(nil)
+    end
+    if ConfigMgr._Selected == clean then
+        ConfigMgr._Selected = "default"
+        ConfigMgr._InputName = "default"
+    end
+    Misc._SendNotify("Config Deleted", string.format("Removed profile '%s'", clean), "info", true)
+    return true
+end
+
+function ConfigMgr.TryAutoLoad()
+    local target = ConfigMgr.GetAutoLoad()
+    if target and target ~= "" then
+        if ConfigMgr.Load(target, true) then
+            Misc._SendNotify("Auto-Load", "Loaded saved profile: " .. target, "info", true)
+        end
+    end
+end
+end)()
 
 -- ============================================================================
 -- 9. CLEAN & PROFESSIONAL OBSIDIAN TACTICAL UI + HUD
@@ -4311,6 +4687,8 @@ toastLayout.Parent = ToastContainer
 local UI = {
     _Refreshers = {} :: { () -> () },
     _OnChange = {} :: { () -> () },
+    _GlassCards = {} :: { { Frame: Frame, Stroke: UIStroke } },
+    _GlassPreview = {} :: { Main: Frame?, Header: Frame?, Stage: Frame?, MainStroke: UIStroke? },
     _ActiveEspCategory = "Player",
     Preview = {} :: { [string]: any },
 }
@@ -4476,15 +4854,17 @@ MainWindow.AnchorPoint = Vector2.new(0.5, 0.5)
 MainWindow.Position = UDim2.fromScale(0.5, 0.5)
 MainWindow.Size = UDim2.fromOffset(740, 490)
 MainWindow.BackgroundColor3 = THEME.BgMain
+MainWindow.BackgroundTransparency = 0.22
 MainWindow.ClipsDescendants = true
 MainWindow.Parent = ScreenGui
 addCorner(MainWindow, 10)
-addStroke(MainWindow, THEME.Border, 1.2, 0)
+addStroke(MainWindow, THEME.Border, 1.2, 0.25)
 
 -- Sidebar Navigation
 local Sidebar = Instance.new("Frame")
 Sidebar.Size = UDim2.new(0, 168, 1, 0)
 Sidebar.BackgroundColor3 = THEME.BgSidebar
+Sidebar.BackgroundTransparency = 0.28
 Sidebar.BorderSizePixel = 0
 Sidebar.Parent = MainWindow
 
@@ -4492,6 +4872,7 @@ local SideSep = Instance.new("Frame")
 SideSep.Position = UDim2.new(1, -1, 0, 0)
 SideSep.Size = UDim2.new(0, 1, 1, 0)
 SideSep.BackgroundColor3 = THEME.Border
+SideSep.BackgroundTransparency = 0.45
 SideSep.BorderSizePixel = 0
 SideSep.Parent = Sidebar
 
@@ -4548,6 +4929,7 @@ local HeaderBar = Instance.new("Frame")
 HeaderBar.Position = UDim2.fromOffset(168, 0)
 HeaderBar.Size = UDim2.new(1, -168, 0, 48)
 HeaderBar.BackgroundColor3 = THEME.BgHeader
+HeaderBar.BackgroundTransparency = 0.28
 HeaderBar.BorderSizePixel = 0
 HeaderBar.Parent = MainWindow
 
@@ -4555,6 +4937,7 @@ local HeaderSep = Instance.new("Frame")
 HeaderSep.Position = UDim2.new(0, 0, 1, -1)
 HeaderSep.Size = UDim2.new(1, 0, 0, 1)
 HeaderSep.BackgroundColor3 = THEME.Border
+HeaderSep.BackgroundTransparency = 0.45
 HeaderSep.BorderSizePixel = 0
 HeaderSep.Parent = HeaderBar
 
@@ -4632,7 +5015,7 @@ local function selectTab(tab: TabObj)
         t.Page.Visible = on
         quickTween(t.Button, {
             BackgroundColor3 = on and THEME.BgControl or THEME.BgSidebar,
-            BackgroundTransparency = on and 0 or 1,
+            BackgroundTransparency = on and 0.30 or 1,
             TextColor3 = on and THEME.TextPrimary or THEME.TextSecondary,
         })
         quickTween(t.Indicator, { Size = on and UDim2.fromOffset(3, 18) or UDim2.fromOffset(3, 0) })
@@ -4711,14 +5094,44 @@ function UI.AddTab(title: string): TabObj
     return tabObj
 end
 
+function UI.ApplyGlassTheme()
+    local g = math.clamp((Config.Settings.MenuTransparency or 22) / 100, 0, 0.55)
+    local subAlpha = math.clamp(g + 0.06, 0, 0.72)
+    local cardAlpha = math.clamp(g + 0.14, 0.08, 0.78)
+    MainWindow.BackgroundTransparency = g
+    Sidebar.BackgroundTransparency = subAlpha
+    HeaderBar.BackgroundTransparency = subAlpha
+    WatermarkFrame.BackgroundTransparency = math.clamp(g + 0.06, 0.10, 0.75)
+    TargetHudFrame.BackgroundTransparency = math.clamp(g + 0.04, 0.10, 0.72)
+    for _, rec in ipairs(UI._GlassCards) do
+        if rec.Frame.Parent then
+            rec.Frame.BackgroundTransparency = cardAlpha
+            rec.Stroke.Transparency = math.clamp(0.32 + g * 0.45, 0.18, 0.72)
+        end
+    end
+    local pv = UI._GlassPreview
+    if pv.Main and pv.Main.Parent then
+        pv.Main.BackgroundTransparency = g
+    end
+    if pv.Header and pv.Header.Parent then
+        pv.Header.BackgroundTransparency = subAlpha
+    end
+    if pv.Stage and pv.Stage.Parent then
+        pv.Stage.BackgroundTransparency = math.clamp(g + 0.12, 0.12, 0.76)
+    end
+end
+
 function UI.AddSection(tab: TabObj, colSide: "Left" | "Right", title: string): Frame
+    local g = math.clamp((Config.Settings.MenuTransparency or 22) / 100, 0, 0.55)
     local card = Instance.new("Frame")
     card.Size = UDim2.new(1, -4, 0, 32)
     card.AutomaticSize = Enum.AutomaticSize.Y
     card.BackgroundColor3 = THEME.BgCard
+    card.BackgroundTransparency = math.clamp(g + 0.14, 0.08, 0.78)
     card.Parent = (colSide == "Right") and tab.Right or tab.Left
     addCorner(card, 8)
-    addStroke(card, THEME.Border, 1, 0.15)
+    local cardStroke = addStroke(card, THEME.Border, 1, math.clamp(0.32 + g * 0.45, 0.18, 0.72))
+    table.insert(UI._GlassCards, { Frame = card, Stroke = cardStroke })
 
     local hdr = Instance.new("TextLabel")
     hdr.Position = UDim2.fromOffset(12, 8)
@@ -4940,7 +5353,7 @@ function UI.AddSlider(sec: Frame, label: string, minVal: number, maxVal: number,
     end)
 end
 
-function UI.AddDropdown(sec: Frame, label: string, options: { string }, getter: () -> string, setter: (string) -> ())
+function UI.AddDropdown(sec: Frame, label: string, options: { string } | () -> { string }, getter: () -> string, setter: (string) -> ())
     local holder = Instance.new("Frame")
     holder.Size = UDim2.new(1, 0, 0, 26)
     holder.BackgroundTransparency = 1
@@ -4961,13 +5374,15 @@ function UI.AddDropdown(sec: Frame, label: string, options: { string }, getter: 
     btn.Position = UDim2.new(1, 0, 0.5, 0)
     btn.Size = UDim2.new(0.5, 0, 0, 24)
     btn.BackgroundColor3 = THEME.BgControl
+    btn.BackgroundTransparency = 0.14
     btn.Font = Enum.Font.GothamMedium
     btn.TextSize = 11
     btn.TextColor3 = THEME.TextPrimary
+    btn.TextTruncate = Enum.TextTruncate.AtEnd
     btn.AutoButtonColor = false
     btn.Parent = holder
     addCorner(btn, 6)
-    addStroke(btn, THEME.Border, 1, 0.2)
+    addStroke(btn, THEME.Border, 1, 0.25)
 
     local function sync()
         btn.Text = getter() .. "  v"
@@ -4981,14 +5396,24 @@ function UI.AddDropdown(sec: Frame, label: string, options: { string }, getter: 
             return
         end
         IgnoreNextPopupDismiss = true
+        local optList: { string } = (type(options) == "function") and (options :: any)() or (options :: { string })
+        local menuH = math.min(#optList * 26 + 8, 220)
+        local layerSize = PopupLayer.AbsoluteSize
+        local mx = math.min(btn.AbsolutePosition.X, math.max(8, layerSize.X - btn.AbsoluteSize.X - 8))
+        local my = btn.AbsolutePosition.Y + btn.AbsoluteSize.Y + 4
+        if layerSize.Y > 0 and my + menuH > layerSize.Y - 8 then
+            my = math.max(8, btn.AbsolutePosition.Y - menuH - 4)
+        end
+
         local menu = Instance.new("Frame")
-        menu.Position = UDim2.fromOffset(btn.AbsolutePosition.X, btn.AbsolutePosition.Y + btn.AbsoluteSize.Y + 4)
-        menu.Size = UDim2.fromOffset(btn.AbsoluteSize.X, math.min(#options * 26 + 8, 220))
+        menu.Position = UDim2.fromOffset(mx, my)
+        menu.Size = UDim2.fromOffset(btn.AbsoluteSize.X, menuH)
         menu.BackgroundColor3 = THEME.BgSidebar
+        menu.BackgroundTransparency = 0.08
         menu.ZIndex = 65
         menu.Parent = PopupLayer
         addCorner(menu, 7)
-        addStroke(menu, THEME.Accent, 1, 0.45)
+        addStroke(menu, THEME.Accent, 1, 0.4)
 
         local list = Instance.new("UIListLayout")
         list.Padding = UDim.new(0, 2)
@@ -4999,10 +5424,11 @@ function UI.AddDropdown(sec: Frame, label: string, options: { string }, getter: 
         pad.PaddingRight = UDim.new(0, 4)
         pad.Parent = menu
 
-        for _, opt in ipairs(options) do
+        for _, opt in ipairs(optList) do
             local ob = Instance.new("TextButton")
             ob.Size = UDim2.new(1, 0, 0, 24)
             ob.BackgroundColor3 = (opt == getter()) and THEME.BgHover or THEME.BgSidebar
+            ob.BackgroundTransparency = (opt == getter()) and 0.15 or 0.35
             ob.Font = Enum.Font.GothamMedium
             ob.TextSize = 11
             ob.TextColor3 = (opt == getter()) and THEME.Accent or THEME.TextPrimary
@@ -5598,6 +6024,67 @@ function UI.AddKeybindRow(sec: Frame, label: string, getFn: () -> BindValue, set
     bb.Position = UDim2.new(1, 0, 0.5, 0)
 end
 
+function UI.AddTextBox(sec: Frame, label: string, placeholder: string, getter: () -> string, setter: (string) -> ())
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, 0, 0, 26)
+    row.BackgroundTransparency = 1
+    row.Parent = sec
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(0.48, 0, 1, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextSize = 12
+    lbl.TextColor3 = THEME.TextPrimary
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Text = label
+    lbl.Parent = row
+
+    local box = Instance.new("TextBox")
+    box.AnchorPoint = Vector2.new(1, 0.5)
+    box.Position = UDim2.new(1, 0, 0.5, 0)
+    box.Size = UDim2.new(0.5, 0, 0, 24)
+    box.BackgroundColor3 = THEME.BgControl
+    box.BackgroundTransparency = 0.14
+    box.Font = Enum.Font.GothamMedium
+    box.TextSize = 11
+    box.TextColor3 = THEME.TextPrimary
+    box.PlaceholderColor3 = THEME.TextMuted
+    box.PlaceholderText = placeholder
+    box.ClearTextOnFocus = false
+    box.Text = getter()
+    box.Parent = row
+    addCorner(box, 6)
+    local stroke = addStroke(box, THEME.Border, 1, 0.25)
+
+    local pad = Instance.new("UIPadding")
+    pad.PaddingLeft = UDim.new(0, 6)
+    pad.PaddingRight = UDim.new(0, 6)
+    pad.Parent = box
+
+    local function sync()
+        if not box:IsFocused() then
+            box.Text = getter()
+        end
+    end
+    table.insert(UI._Refreshers, sync)
+
+    Session.Bind(box.Focused, function()
+        quickTween(stroke, { Color = THEME.Accent, Transparency = 0.15 }, 0.12)
+    end)
+    Session.Bind(box.FocusLost, function()
+        quickTween(stroke, { Color = THEME.Border, Transparency = 0.25 }, 0.12)
+        setter(box.Text)
+        sync()
+        UI.NotifyChange()
+    end)
+    Session.Bind(box:GetPropertyChangedSignal("Text"), function()
+        if box:IsFocused() then
+            setter(box.Text)
+        end
+    end)
+end
+
 function UI.AddButton(sec: Frame, label: string, style: ("normal" | "danger" | "accent")?, onClick: () -> ())
     local bg = style == "danger" and Color3.fromRGB(70, 22, 29)
         or (style == "accent" and Color3.fromRGB(16, 44, 64) or THEME.BgControl)
@@ -5608,6 +6095,7 @@ function UI.AddButton(sec: Frame, label: string, style: ("normal" | "danger" | "
     local btn = Instance.new("TextButton")
     btn.Size = UDim2.new(1, 0, 0, 28)
     btn.BackgroundColor3 = bg
+    btn.BackgroundTransparency = 0.14
     btn.Font = Enum.Font.GothamBold
     btn.TextSize = 12
     btn.TextColor3 = fg
@@ -5615,8 +6103,16 @@ function UI.AddButton(sec: Frame, label: string, style: ("normal" | "danger" | "
     btn.AutoButtonColor = false
     btn.Parent = sec
     addCorner(btn, 6)
-    addStroke(btn, strokeCol, 1, 0.35)
+    local stroke = addStroke(btn, strokeCol, 1, 0.35)
 
+    Session.Bind(btn.MouseEnter, function()
+        quickTween(btn, { BackgroundTransparency = 0.02 }, 0.12)
+        quickTween(stroke, { Transparency = 0.12 }, 0.12)
+    end)
+    Session.Bind(btn.MouseLeave, function()
+        quickTween(btn, { BackgroundTransparency = 0.14 }, 0.12)
+        quickTween(stroke, { Transparency = 0.35 }, 0.12)
+    end)
     Session.Bind(btn.MouseButton1Click, onClick)
 end
 
@@ -6363,6 +6859,49 @@ do
     UI.AddToggle(secUI, "Target Info HUD", function() return Config.Settings.TargetHUD end, function(v) Config.Settings.TargetHUD = v end)
     UI.AddToggle(secUI, "Notifications", function() return Config.Settings.Notifications end, function(v) Config.Settings.Notifications = v end)
     UI.AddSlider(secUI, "ESP Font Size", 10, 18, 1, "px", function() return Config.Settings.FontSize end, function(v) Config.Settings.FontSize = v end)
+    UI.AddSlider(secUI, "Menu Transparency", 0, 45, 1, "%", function() return Config.Settings.MenuTransparency end, function(v)
+        Config.Settings.MenuTransparency = v
+        UI.ApplyGlassTheme()
+    end)
+
+    local secCfg = UI.AddSection(SettingsTab, "Right", "Config Manager")
+    UI.AddTextBox(secCfg, "Config Name", "default", function()
+        return ConfigMgr._InputName
+    end, function(txt)
+        ConfigMgr._InputName = txt
+    end)
+    UI.AddDropdown(secCfg, "Saved Profiles", function()
+        return ConfigMgr.List()
+    end, function()
+        return ConfigMgr._Selected
+    end, function(v)
+        ConfigMgr._Selected = v
+        ConfigMgr._InputName = v
+        UI.RefreshAll()
+    end)
+    UI.AddButton(secCfg, "Save Config", "accent", function()
+        local name = (ConfigMgr._InputName ~= "" and ConfigMgr._InputName) or ConfigMgr._Selected
+        ConfigMgr.Save(name)
+        UI.RefreshAll()
+    end)
+    UI.AddButton(secCfg, "Load Config", "normal", function()
+        ConfigMgr.Load(ConfigMgr._Selected, false)
+    end)
+    UI.AddToggle(secCfg, "Auto Load Selected", function()
+        return ConfigMgr.GetAutoLoad() == ConfigMgr._Selected
+    end, function(v)
+        if v then
+            ConfigMgr.SetAutoLoad(ConfigMgr._Selected)
+            UI.Notify("Auto-Load", "Set '" .. ConfigMgr._Selected .. "' on startup.", "success")
+        else
+            ConfigMgr.SetAutoLoad(nil)
+            UI.Notify("Auto-Load", "Disabled startup config.", "info")
+        end
+    end)
+    UI.AddButton(secCfg, "Delete Config", "danger", function()
+        ConfigMgr.Delete(ConfigMgr._Selected)
+        UI.RefreshAll()
+    end)
 
     local secSess = UI.AddSection(SettingsTab, "Right", "Session Control")
     UI.AddButton(secSess, "Restore World & Weapons", "normal", function()
@@ -6396,6 +6935,7 @@ do
         World.RestoreAll()
         WatermarkFrame.Visible = Config.Settings.Watermark
         SideFooter.Text = formatBindName(Config.Settings.MenuKey) .. " to Toggle"
+        UI.ApplyGlassTheme()
         UI.RefreshAll()
         UI.Notify("Config Reset", "All settings restored to defaults.", "info")
     end)
@@ -6407,21 +6947,23 @@ end
 -- ============================================================================
 -- 10B. INTERACTIVE 4-ZONE ESP PREVIEW PANEL (CHARACTER & LOOT CUBE)
 -- ============================================================================
-do
+;(function()
     local PreviewFrame = Instance.new("Frame")
     PreviewFrame.Name = "EspPreviewPanel"
     PreviewFrame.Size = UDim2.fromOffset(282, 490)
     PreviewFrame.BackgroundColor3 = THEME.BgMain
+    PreviewFrame.BackgroundTransparency = 0.22
     PreviewFrame.ClipsDescendants = true
     PreviewFrame.Visible = false
     PreviewFrame.ZIndex = 20
     PreviewFrame.Parent = ScreenGui
     addCorner(PreviewFrame, 10)
-    addStroke(PreviewFrame, THEME.Border, 1.2, 0)
+    local pStroke = addStroke(PreviewFrame, THEME.Border, 1.2, 0.25)
 
     local PHeader = Instance.new("Frame")
     PHeader.Size = UDim2.new(1, 0, 0, 42)
     PHeader.BackgroundColor3 = THEME.BgHeader
+    PHeader.BackgroundTransparency = 0.28
     PHeader.BorderSizePixel = 0
     PHeader.Parent = PreviewFrame
 
@@ -6429,6 +6971,7 @@ do
     PHeaderSep.Position = UDim2.new(0, 0, 1, -1)
     PHeaderSep.Size = UDim2.new(1, 0, 0, 1)
     PHeaderSep.BackgroundColor3 = THEME.Border
+    PHeaderSep.BackgroundTransparency = 0.45
     PHeaderSep.BorderSizePixel = 0
     PHeaderSep.Parent = PHeader
 
@@ -6499,10 +7042,13 @@ do
     Stage.Position = UDim2.fromOffset(10, 64)
     Stage.Size = UDim2.fromOffset(STAGE_W, STAGE_H)
     Stage.BackgroundColor3 = Color3.fromRGB(9, 12, 18)
+    Stage.BackgroundTransparency = 0.34
     Stage.ClipsDescendants = true
     Stage.Parent = PreviewFrame
     addCorner(Stage, 8)
-    addStroke(Stage, THEME.Border, 1, 0.2)
+    addStroke(Stage, THEME.Border, 1, 0.32)
+
+    UI._GlassPreview = { Main = PreviewFrame, Header = PHeader, Stage = Stage, MainStroke = pStroke }
 
     local stageGrad = Instance.new("UIGradient")
     stageGrad.Rotation = 90
@@ -7257,7 +7803,7 @@ do
         end
         HoverZone = nil
     end)
-end
+end)()
 
 -- ============================================================================
 -- 11. INPUT HANDLING & MAIN FRAME LOOP
@@ -7514,4 +8060,16 @@ Session.Bind(RunService.RenderStepped, function(dt: number)
     end
 end)
 
+ConfigMgr._ApplyUI = function()
+    WatermarkFrame.Visible = Config.Settings.Watermark and not (Config.Misc.PanicMode and Config.Misc.PanicHideVisuals)
+    SideFooter.Text = formatBindName(Config.Settings.MenuKey) .. " to Toggle"
+    UI.ApplyGlassTheme()
+    UI.RefreshAll()
+    if type(UI.Preview.Refresh) == "function" then
+        UI.Preview.Refresh()
+    end
+end
+
+UI.ApplyGlassTheme()
+ConfigMgr.TryAutoLoad()
 UI.Notify("Delta Suite Loaded", "Combat, Visuals & Misc active for Project Delta.", "success")

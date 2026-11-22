@@ -187,9 +187,15 @@ local function createDefaultConfig()
             Key = Enum.UserInputType.MouseButton2 :: BindValue,
             Mode = "Hold", -- Hold | Toggle | Always
             Method = "Camera", -- Camera | Mouse
+            Priority = "Crosshair", -- Crosshair | Closest Dist | Lowest HP
             HitPart = "Head", -- Head | FaceHitBox | HeadTopHitBox | UpperTorso | HumanoidRootPart | Closest
             TeamCheck = true,
             VisibleCheck = true,
+            LockBehindWalls = false,
+            VisibleFallback = true,
+            MultiPoint = true,
+            StickyTarget = true,
+            OnlyADS = false,
             IgnoreDowned = true,
             TargetAI = false,
             Prediction = true,
@@ -248,6 +254,8 @@ local function createDefaultConfig()
             Key = Enum.KeyCode.Unknown :: BindValue,
             Mode = "Hold", -- Hold | Toggle | Always
             DelayMs = 40,
+            MaxDistance = 500,
+            HitFilter = "Any", -- Any | Head Only | Body Only
             TeamCheck = true,
             IgnoreDowned = true,
             TargetAI = false,
@@ -1720,10 +1728,12 @@ function Targeting.FindBestTarget(opts: {
     HitPart: string,
     TeamCheck: boolean,
     VisibleCheck: boolean,
+    PreferVisibleFallback: boolean?,
     IgnoreDowned: boolean,
     TargetAI: boolean,
     UseFOV: boolean,
     FOVKind: ("Aimbot" | "Silent")?,
+    FOVMultiplier: number?,
     MaxDistance: number,
     RayOrigin: Vector3?,
     AimPoint: string?,
@@ -1734,6 +1744,7 @@ function Targeting.FindBestTarget(opts: {
     AllowRandom: boolean?,
     Priority: string?,
     MultiPoint: boolean?,
+    OnlyModel: Model?,
 }): TargetResult?
     local cam = Workspace.CurrentCamera
     if not cam then
@@ -1741,7 +1752,8 @@ function Targeting.FindBestTarget(opts: {
     end
 
     local aim2D = Targeting.GetAimOrigin2D()
-    local fovRadius = opts.UseFOV and Targeting.GetEffectiveFOVRadius(opts.FOVKind) or math.huge
+    local baseRadius = opts.UseFOV and Targeting.GetEffectiveFOVRadius(opts.FOVKind) or math.huge
+    local fovRadius = (baseRadius < math.huge and opts.FOVMultiplier) and (baseRadius * opts.FOVMultiplier) or baseRadius
     local camPos = cam.CFrame.Position
     local visOrigin = opts.RayOrigin or camPos
 
@@ -1759,6 +1771,9 @@ function Targeting.FindBestTarget(opts: {
     local candidates: { CandidateRec } = {}
 
     for model, entry in pairs(Actors) do
+        if opts.OnlyModel and model ~= opts.OnlyModel then
+            continue
+        end
         if not model.Parent then
             continue
         end
@@ -1797,7 +1812,7 @@ function Targeting.FindBestTarget(opts: {
         end
 
         local screenPos, onScreen = cam:WorldToViewportPoint(primary.Position)
-        if not onScreen then
+        if not onScreen or screenPos.Z <= 0 then
             continue
         end
 
@@ -1837,54 +1852,57 @@ function Targeting.FindBestTarget(opts: {
     end)
 
     local budget = { Remaining = math.max(1, opts.RaycastBudget or Config.Targeting.RaycastBudget or 6) }
-    for _, cand in ipairs(candidates) do
-        if not opts.VisibleCheck then
-            return {
-                Model = cand.Model,
-                Player = cand.Entry.Player,
-                IsAI = cand.Entry.IsAI,
-                Part = cand.PrimaryPart,
-                AimPointWorld = cand.PrimaryPart.Position,
-                ScreenPos = cand.ScreenPos,
-                ScreenDist = cand.ScreenDist,
-                WorldDist = cand.WorldDist,
-                Health = cand.Health,
-                MaxHealth = cand.MaxHealth,
-            }
-        end
-
-        for idx, part in ipairs(cand.Parts) do
+    local doVisCheck = opts.VisibleCheck or (opts.PreferVisibleFallback == true)
+    if doVisCheck then
+        for _, cand in ipairs(candidates) do
             if budget.Remaining <= 0 then
                 break
             end
-            if idx > 1 and not opts.VisibleFallback and opts.AimPoint ~= "Random" then
-                break
-            end
-            local hitWorld = Delta.FindVisiblePartPoint(cand.Model, part, visOrigin, opts.Wallbang, budget, opts.MultiPoint == true)
-            if hitWorld then
-                local sp, onScr = cam:WorldToViewportPoint(hitWorld)
-                local p2d = onScr and Vector2.new(sp.X, sp.Y) or cand.ScreenPos
-                local sd = onScr and (p2d - aim2D).Magnitude or cand.ScreenDist
-                if not opts.UseFOV or sd <= fovRadius then
-                    return {
-                        Model = cand.Model,
-                        Player = cand.Entry.Player,
-                        IsAI = cand.Entry.IsAI,
-                        Part = part,
-                        AimPointWorld = hitWorld,
-                        ScreenPos = p2d,
-                        ScreenDist = sd,
-                        WorldDist = (hitWorld - camPos).Magnitude,
-                        Health = cand.Health,
-                        MaxHealth = cand.MaxHealth,
-                    }
+            for idx, part in ipairs(cand.Parts) do
+                if budget.Remaining <= 0 then
+                    break
+                end
+                if idx > 1 and not opts.VisibleFallback and opts.AimPoint ~= "Random" then
+                    break
+                end
+                local hitWorld = Delta.FindVisiblePartPoint(cand.Model, part, visOrigin, opts.Wallbang, budget, opts.MultiPoint == true)
+                if hitWorld then
+                    local sp, onScr = cam:WorldToViewportPoint(hitWorld)
+                    local p2d = (onScr and sp.Z > 0) and Vector2.new(sp.X, sp.Y) or cand.ScreenPos
+                    local sd = (onScr and sp.Z > 0) and (p2d - aim2D).Magnitude or cand.ScreenDist
+                    if not opts.UseFOV or sd <= fovRadius then
+                        return {
+                            Model = cand.Model,
+                            Player = cand.Entry.Player,
+                            IsAI = cand.Entry.IsAI,
+                            Part = part,
+                            AimPointWorld = hitWorld,
+                            ScreenPos = p2d,
+                            ScreenDist = sd,
+                            WorldDist = (hitWorld - camPos).Magnitude,
+                            Health = cand.Health,
+                            MaxHealth = cand.MaxHealth,
+                        }
+                    end
                 end
             end
         end
+    end
 
-        if budget.Remaining <= 0 then
-            break
-        end
+    if not opts.VisibleCheck or opts.PreferVisibleFallback then
+        local cand = candidates[1]
+        return {
+            Model = cand.Model,
+            Player = cand.Entry.Player,
+            IsAI = cand.Entry.IsAI,
+            Part = cand.PrimaryPart,
+            AimPointWorld = cand.PrimaryPart.Position,
+            ScreenPos = cand.ScreenPos,
+            ScreenDist = cand.ScreenDist,
+            WorldDist = cand.WorldDist,
+            Health = cand.Health,
+            MaxHealth = cand.MaxHealth,
+        }
     end
 
     return nil
@@ -2114,7 +2132,7 @@ local function findSilentAimTarget(shotOrigin: Vector3, allowRandom: boolean?): 
         TeamCheck = Config.SilentAim.TeamCheck,
         VisibleCheck = Config.SilentAim.VisibleCheck,
         IgnoreDowned = Config.SilentAim.IgnoreDowned,
-        TargetAI = Config.Targeting.TargetAI,
+        TargetAI = (Config.Targeting.TargetAI == true) or (Config.SilentAim.TargetAI == true),
         UseFOV = Config.SilentAim.UseFOV,
         MaxDistance = 4000, -- Project Delta Bullet.onStep max range
         RayOrigin = shotOrigin,
@@ -2276,19 +2294,33 @@ do
     end
 end
 
--- 6D. Aimbot Step (stabilized Camera slerp + Mouse fractional accumulator to prevent wobble)
+-- 6D. Aimbot Step (Sticky lock, EMA velocity prediction, FPS-independent slerp, visible/behind-wall support)
 local mouseAccumX, mouseAccumY = 0, 0
 local lastTriggerShotAt = 0
+
+Combat._StickyAimModel = nil :: Model?
+Combat._AimVelCache = Vector3.zero
+Combat._IsMenuOpen = nil :: (() -> boolean)?
 
 local function stepAimbot(dt: number)
     if Config.Misc.PanicMode and Config.Misc.PanicDisableCombat then
         mouseAccumX, mouseAccumY = 0, 0
+        Combat._StickyAimModel = nil
+        Combat._AimVelCache = Vector3.zero
         ActiveLockedTarget = nil
         return
     end
     local active = isModeActive("Aimbot", Config.Aimbot.Enabled, Config.Aimbot.Mode, Config.Aimbot.Key)
+    if active and Config.Aimbot.OnlyADS and not Delta.IsLocalADS() then
+        active = false
+    end
+    if active and Combat._IsMenuOpen and Combat._IsMenuOpen() then
+        active = false
+    end
     if not active then
         mouseAccumX, mouseAccumY = 0, 0
+        Combat._StickyAimModel = nil
+        Combat._AimVelCache = Vector3.zero
         if isModeActive("SilentAim", Config.SilentAim.Enabled, Config.SilentAim.Mode, Config.SilentAim.Key) then
             ActiveLockedTarget = findSilentAimTarget(Delta.GetShotOrigin())
         else
@@ -2297,20 +2329,62 @@ local function stepAimbot(dt: number)
         return
     end
 
-    local target = Targeting.FindBestTarget({
+    local behindWalls = (Config.Aimbot.LockBehindWalls == true)
+    local wantVisCheck = (Config.Aimbot.VisibleCheck == true) and not behindWalls
+    local shotOrigin = Delta.GetShotOrigin()
+
+    local aimOpts = {
         HitPart = Config.Aimbot.HitPart,
         TeamCheck = Config.Aimbot.TeamCheck,
-        VisibleCheck = Config.Aimbot.VisibleCheck,
+        VisibleCheck = wantVisCheck,
+        PreferVisibleFallback = behindWalls and (Config.Aimbot.VisibleCheck == true),
         IgnoreDowned = Config.Aimbot.IgnoreDowned,
         TargetAI = Config.Aimbot.TargetAI,
         UseFOV = true,
-        FOVKind = "Aimbot",
+        FOVKind = "Aimbot" :: ("Aimbot" | "Silent")?,
         MaxDistance = Config.Aimbot.MaxDistance,
-    })
+        RayOrigin = shotOrigin,
+        Priority = Config.Aimbot.Priority or "Crosshair",
+        VisibleFallback = (Config.Aimbot.VisibleFallback ~= false),
+        MultiPoint = (Config.Aimbot.MultiPoint ~= false),
+        RaycastBudget = Config.Targeting.RaycastBudget,
+    }
 
+    local target: TargetResult? = nil
+    if Config.Aimbot.StickyTarget ~= false and Combat._StickyAimModel and Actors[Combat._StickyAimModel] then
+        target = Targeting.FindBestTarget({
+            HitPart = aimOpts.HitPart,
+            TeamCheck = aimOpts.TeamCheck,
+            VisibleCheck = aimOpts.VisibleCheck,
+            PreferVisibleFallback = aimOpts.PreferVisibleFallback,
+            IgnoreDowned = aimOpts.IgnoreDowned,
+            TargetAI = aimOpts.TargetAI,
+            UseFOV = true,
+            FOVKind = "Aimbot",
+            FOVMultiplier = 1.35,
+            MaxDistance = aimOpts.MaxDistance,
+            RayOrigin = shotOrigin,
+            Priority = aimOpts.Priority,
+            VisibleFallback = aimOpts.VisibleFallback,
+            MultiPoint = aimOpts.MultiPoint,
+            RaycastBudget = aimOpts.RaycastBudget,
+            OnlyModel = Combat._StickyAimModel,
+        })
+    end
+
+    if not target then
+        target = Targeting.FindBestTarget(aimOpts)
+        if target and target.Model ~= Combat._StickyAimModel then
+            mouseAccumX, mouseAccumY = 0, 0
+            Combat._AimVelCache = Vector3.zero
+        end
+    end
+
+    Combat._StickyAimModel = target and target.Model or nil
     ActiveLockedTarget = target
     if not target then
         mouseAccumX, mouseAccumY = 0, 0
+        Combat._AimVelCache = Vector3.zero
         return
     end
 
@@ -2319,25 +2393,47 @@ local function stepAimbot(dt: number)
         return
     end
 
-    local aimWorld = Delta.PredictAimPosition(cam.CFrame.Position, target.Part, Config.Aimbot.Prediction, Config.Aimbot.DropComp, nil, target.AimPointWorld)
+    local rawVel = target.Part.AssemblyLinearVelocity
+    if rawVel.Magnitude > 120 or rawVel.Magnitude < 0.6 then
+        rawVel = Vector3.zero
+    end
+    local velAlpha = math.clamp(dt * 18, 0.25, 0.85)
+    Combat._AimVelCache = Combat._AimVelCache:Lerp(rawVel, velAlpha)
+
+    local aimWorld = target.AimPointWorld
+    if Config.Aimbot.Prediction or Config.Aimbot.DropComp then
+        local ballistics = Delta.GetLocalBallistics()
+        local speed = math.max(ballistics.Velocity, 100)
+        local drag = math.max(ballistics.Drag or 0.013, 0)
+        local vel = Config.Aimbot.Prediction and Combat._AimVelCache or Vector3.zero
+        local gravity = Config.Aimbot.DropComp and (70 * (ballistics.Drop / 4.6)) or 0
+        local t = (aimWorld - shotOrigin).Magnitude / speed
+        for _ = 1, 4 do
+            local avgSpeed = math.max(speed * math.exp(-0.5 * drag * t * 12), 100)
+            local future = target.AimPointWorld + vel * t + Vector3.new(0, 0.5 * gravity * t * t, 0)
+            t = (future - shotOrigin).Magnitude / avgSpeed
+            aimWorld = future
+        end
+    end
 
     if Config.Aimbot.Method == "Mouse" and type(mousemoverel) == "function" then
         local sp, onScreen = cam:WorldToViewportPoint(aimWorld)
-        if not onScreen then
+        if not onScreen or sp.Z <= 0 then
             return
         end
         local cur2D = Targeting.GetAimOrigin2D()
         local dx = sp.X - cur2D.X
         local dy = sp.Y - cur2D.Y
 
-        -- Deadzone prevents sub-pixel oscillation from fighting mouse sensitivity
-        if math.abs(dx) < 1.5 and math.abs(dy) < 1.5 then
+        if math.abs(dx) < 0.6 and math.abs(dy) < 0.6 then
             mouseAccumX, mouseAccumY = 0, 0
             return
         end
 
-        local factor = 1 - math.clamp(Config.Aimbot.Smoothness / 100, 0, 0.96)
-        local gain = math.clamp(factor * (dt * 60) * 0.45, 0.04, 0.85) * Config.Aimbot.MouseSens
+        local normSmooth = math.clamp(Config.Aimbot.Smoothness / 100, 0, 0.95)
+        local responsiveness = math.pow(1 - normSmooth, 1.35)
+        local frameAlpha = 1 - math.exp(-responsiveness * 38 * math.clamp(dt, 0.001, 0.05))
+        local gain = math.clamp(frameAlpha * Config.Aimbot.MouseSens, 0.03, 1.0)
         mouseAccumX += dx * gain
         mouseAccumY += dy * gain
 
@@ -2346,23 +2442,71 @@ local function stepAimbot(dt: number)
         if stepX ~= 0 or stepY ~= 0 then
             mouseAccumX -= stepX
             mouseAccumY -= stepY
-            pcall(mousemoverel, math.clamp(stepX, -65, 65), math.clamp(stepY, -65, 65))
+            pcall(mousemoverel, math.clamp(stepX, -85, 85), math.clamp(stepY, -85, 85))
         end
     else
-        local targetCF = CFrame.lookAt(cam.CFrame.Position, aimWorld)
-        local smooth = math.clamp(Config.Aimbot.Smoothness / 100, 0, 0.97)
-        if smooth <= 0.01 then
+        -- Compensate camera rotation around camPos using shot-origin offset if leaning/ADS
+        local camPos = cam.CFrame.Position
+        local aimDir = aimWorld - shotOrigin
+        local lookTarget = (aimDir.Magnitude > 0.25) and (camPos + aimDir) or aimWorld
+        local targetCF = CFrame.lookAt(camPos, lookTarget)
+        local normSmooth = math.clamp(Config.Aimbot.Smoothness / 100, 0, 0.97)
+        if normSmooth <= 0.01 then
             cam.CFrame = targetCF
         else
-            local alpha = 1 - math.pow(smooth, math.clamp(dt * 12, 0.01, 2.0))
-            cam.CFrame = cam.CFrame:Lerp(targetCF, math.clamp(alpha, 0.02, 1))
+            local speedRate = math.pow(1 - normSmooth, 1.55) * 42
+            local alpha = 1 - math.exp(-speedRate * math.clamp(dt, 0.001, 0.05))
+            cam.CFrame = cam.CFrame:Lerp(targetCF, math.clamp(alpha, 0.015, 1))
         end
     end
 end
 
--- 6E. TriggerBot Step
+-- 6E. TriggerBot Step (resolves nested armor/helmet/rig Models via ancestor walk & WeaponRay channel)
+local function resolveActorFromHit(hit: Instance): (Model?, ActorEntry?, BasePart?)
+    local part = hit:IsA("BasePart") and hit or nil
+    local realParent = hit:FindFirstChild("RealParent")
+    if realParent and realParent:IsA("ObjectValue") and realParent.Value then
+        local cur: Instance? = realParent.Value
+        while cur do
+            if cur:IsA("Model") and Actors[cur] then
+                return cur, Actors[cur], part
+            end
+            cur = cur.Parent
+        end
+    end
+    local cur: Instance? = hit
+    while cur and cur ~= Workspace do
+        if cur:IsA("Model") and Actors[cur] then
+            return cur, Actors[cur], part
+        end
+        cur = cur.Parent
+    end
+    return nil, nil, part
+end
+
+local function isHeadHitPart(part: BasePart?, model: Model): boolean
+    if not part then
+        return false
+    end
+    local lname = part.Name:lower()
+    if lname:find("head") or lname:find("face") or lname:find("helmet") or lname:find("visor") or lname:find("mask") then
+        return true
+    end
+    local head = model:FindFirstChild("Head")
+    if head and head:IsA("BasePart") and part:IsDescendantOf(head) then
+        return true
+    end
+    return false
+end
+
 local function stepTriggerBot()
     if Config.Misc.PanicMode and Config.Misc.PanicDisableCombat then
+        return
+    end
+    if Combat._IsMenuOpen and Combat._IsMenuOpen() then
+        return
+    end
+    if UserInputService:GetFocusedTextBox() ~= nil then
         return
     end
     if not isModeActive("TriggerBot", Config.TriggerBot.Enabled, Config.TriggerBot.Mode, Config.TriggerBot.Key) then
@@ -2395,58 +2539,88 @@ local function stepTriggerBot()
     local params = RaycastParams.new()
     params.FilterType = Enum.RaycastFilterType.Exclude
     params.IgnoreWater = true
+    pcall(function()
+        params.CollisionGroup = "WeaponRay"
+    end)
 
+    local maxDist = Config.TriggerBot.MaxDistance or 500
     local origin = unitRay.Origin
-    local dir = unitRay.Direction * Config.Aimbot.MaxDistance
-    local hitInst: Instance? = nil
+    local remainingDist = maxDist
+    local hitActorModel: Model? = nil
+    local hitEntry: ActorEntry? = nil
+    local hitPart: BasePart? = nil
 
-    for _ = 1, 4 do
+    for _ = 1, 6 do
+        if remainingDist <= 0.5 then
+            break
+        end
         params.FilterDescendantsInstances = ignore
-        local res = Workspace:Raycast(origin, dir, params)
+        local res = Workspace:Raycast(origin, unitRay.Direction * remainingDist, params)
         if not res then
             break
         end
-        local part = res.Instance
-        if part:IsA("BasePart") and (part.Transparency >= 0.95 or not part.CanCollide) then
-            local model = part:FindFirstAncestorOfClass("Model")
-            if model and Actors[model] then
-                hitInst = model
-                break
-            end
-            table.insert(ignore, part)
-            origin = res.Position + unitRay.Direction * 0.1
+
+        local inst = res.Instance
+        local model, entry, bp = resolveActorFromHit(inst)
+        if model and entry then
+            hitActorModel = model
+            hitEntry = entry
+            hitPart = bp
+            break
+        end
+
+        local isPassThrough = inst:GetAttribute("PassThrough") ~= nil
+            or inst:GetAttribute("Glass") ~= nil
+            or (inst:IsA("BasePart") and (inst.Material == Enum.Material.Glass or inst.Transparency >= 0.85 or not inst.CanCollide))
+        if isPassThrough then
+            local traveled = (res.Position - origin).Magnitude + 0.08
+            remainingDist -= traveled
+            table.insert(ignore, inst)
+            origin = res.Position + unitRay.Direction * 0.08
         else
-            hitInst = part:FindFirstAncestorOfClass("Model")
             break
         end
     end
 
-    if hitInst and hitInst:IsA("Model") then
-        local entry = Actors[hitInst]
-        if not entry then
+    if hitActorModel and hitEntry then
+        if hitEntry.IsAI and not Config.TriggerBot.TargetAI then
             return
         end
-        if entry.IsAI and not Config.TriggerBot.TargetAI then
+        if not hitEntry.IsAI and hitEntry.Player then
+            if Delta.IsFriend(hitEntry.Player) then
+                return
+            end
+            if Config.TriggerBot.TeamCheck and Delta.IsTeammate(hitEntry.Player) then
+                return
+            end
+            if Config.TriggerBot.IgnoreDowned and Delta.IsPlayerDowned(hitEntry.Player, hitActorModel) then
+                return
+            end
+            if Delta.IsPlayerProtected(hitEntry.Player, hitActorModel) then
+                return
+            end
+        end
+
+        local filter = Config.TriggerBot.HitFilter or "Any"
+        if filter == "Head Only" and not isHeadHitPart(hitPart, hitActorModel) then
+            return
+        elseif filter == "Body Only" and isHeadHitPart(hitPart, hitActorModel) then
             return
         end
-        if entry.Player then
-            if Delta.IsFriend(entry.Player) then
-                return
+
+        local hum = hitActorModel:FindFirstChildOfClass("Humanoid")
+        if hum and hum.Health > 0 and not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+            local pressDur = math.clamp(math.max(Config.TriggerBot.DelayMs, 20) * 0.00055, 0.011, 0.028)
+            if type(mouse1press) == "function" and type(mouse1release) == "function" then
+                lastTriggerShotAt = now
+                pcall(mouse1press)
+                task.delay(pressDur, function()
+                    pcall(mouse1release)
+                end)
+            elseif type(mouse1click) == "function" then
+                lastTriggerShotAt = now
+                pcall(mouse1click)
             end
-            if Config.TriggerBot.TeamCheck and Delta.IsTeammate(entry.Player) then
-                return
-            end
-            if Config.TriggerBot.IgnoreDowned and Delta.IsPlayerDowned(entry.Player, hitInst) then
-                return
-            end
-        end
-        local hum = hitInst:FindFirstChildOfClass("Humanoid")
-        if hum and hum.Health > 0 and type(mouse1press) == "function" and type(mouse1release) == "function" then
-            lastTriggerShotAt = now
-            pcall(mouse1press)
-            task.delay(0.03, function()
-                pcall(mouse1release)
-            end)
         end
     end
 end
@@ -7935,13 +8109,19 @@ do
         function() return Config.Aimbot.Key end, function(k) Config.Aimbot.Key = k end)
     UI.AddDropdown(secAim, "Activation Mode", { "Hold", "Toggle", "Always" }, function() return Config.Aimbot.Mode end, function(v) Config.Aimbot.Mode = v end)
     UI.AddDropdown(secAim, "Aim Method", { "Camera", "Mouse" }, function() return Config.Aimbot.Method end, function(v) Config.Aimbot.Method = v end)
+    UI.AddDropdown(secAim, "Target Priority", { "Crosshair", "Closest Dist", "Lowest HP" }, function() return Config.Aimbot.Priority or "Crosshair" end, function(v) Config.Aimbot.Priority = v end)
     UI.AddDropdown(secAim, "Target Hitbox", { "Head", "FaceHitBox", "HeadTopHitBox", "UpperTorso", "HumanoidRootPart", "Closest" },
         function() return Config.Aimbot.HitPart end, function(v) Config.Aimbot.HitPart = v end)
     UI.AddSlider(secAim, "Smoothness", 0, 95, 1, "%", function() return Config.Aimbot.Smoothness end, function(v) Config.Aimbot.Smoothness = v end)
     UI.AddSlider(secAim, "Mouse Gain", 0.2, 3.0, 0.1, "x", function() return Config.Aimbot.MouseSens end, function(v) Config.Aimbot.MouseSens = v end)
     UI.AddSlider(secAim, "Max Distance", 100, 1500, 25, "m", function() return Config.Aimbot.MaxDistance end, function(v) Config.Aimbot.MaxDistance = v end)
+    UI.AddToggle(secAim, "Only When ADS", function() return Config.Aimbot.OnlyADS == true end, function(v) Config.Aimbot.OnlyADS = v end)
+    UI.AddToggle(secAim, "Sticky Target", function() return Config.Aimbot.StickyTarget ~= false end, function(v) Config.Aimbot.StickyTarget = v end)
     UI.AddToggle(secAim, "Team / Clan Check", function() return Config.Aimbot.TeamCheck end, function(v) Config.Aimbot.TeamCheck = v end)
     UI.AddToggle(secAim, "Visible Check", function() return Config.Aimbot.VisibleCheck end, function(v) Config.Aimbot.VisibleCheck = v end)
+    UI.AddToggle(secAim, "Lock Behind Walls", function() return Config.Aimbot.LockBehindWalls == true end, function(v) Config.Aimbot.LockBehindWalls = v end)
+    UI.AddToggle(secAim, "Visible Fallback", function() return Config.Aimbot.VisibleFallback ~= false end, function(v) Config.Aimbot.VisibleFallback = v end)
+    UI.AddToggle(secAim, "Multi-Point Scan", function() return Config.Aimbot.MultiPoint ~= false end, function(v) Config.Aimbot.MultiPoint = v end)
     UI.AddToggle(secAim, "Ignore Downed", function() return Config.Aimbot.IgnoreDowned end, function(v) Config.Aimbot.IgnoreDowned = v end)
     UI.AddToggle(secAim, "Target AI / Bots", function() return Config.Aimbot.TargetAI end, function(v) Config.Aimbot.TargetAI = v end)
     UI.AddToggle(secAim, "Lead Prediction", function() return Config.Aimbot.Prediction end, function(v) Config.Aimbot.Prediction = v end)
@@ -8045,11 +8225,6 @@ do
     UI.AddToggle(secTargeting, "Visible Fallback", function() return Config.Targeting.VisibleFallback end, function(v)
         Config.Targeting.VisibleFallback = v
     end)
-    UI.AddToggle(secTargeting, "Target AI", function() return Config.Targeting.TargetAI end, function(v)
-        Config.Targeting.TargetAI = v
-        Config.SilentAim.TargetAI = v
-        UI.RefreshAll()
-    end)
     UI.AddToggleWithConfig(secTargeting, "Wallbang", function() return Config.Targeting.Wallbang end, function(v)
         Config.Targeting.Wallbang = v
     end, function(pop)
@@ -8105,9 +8280,12 @@ do
     UI.AddToggle(secTrig, "Enable TriggerBot", function() return Config.TriggerBot.Enabled end, function(v) Config.TriggerBot.Enabled = v end,
         function() return Config.TriggerBot.Key end, function(k) Config.TriggerBot.Key = k end)
     UI.AddDropdown(secTrig, "Mode", { "Hold", "Toggle", "Always" }, function() return Config.TriggerBot.Mode end, function(v) Config.TriggerBot.Mode = v end)
+    UI.AddDropdown(secTrig, "Hitbox Filter", { "Any", "Head Only", "Body Only" }, function() return Config.TriggerBot.HitFilter or "Any" end, function(v) Config.TriggerBot.HitFilter = v end)
     UI.AddSlider(secTrig, "Fire Delay", 20, 250, 5, "ms", function() return Config.TriggerBot.DelayMs end, function(v) Config.TriggerBot.DelayMs = v end)
+    UI.AddSlider(secTrig, "Max Distance", 50, 1500, 25, "m", function() return Config.TriggerBot.MaxDistance or 500 end, function(v) Config.TriggerBot.MaxDistance = v end)
     UI.AddToggle(secTrig, "Only When ADS", function() return Config.TriggerBot.OnlyADS end, function(v) Config.TriggerBot.OnlyADS = v end)
     UI.AddToggle(secTrig, "Team Check", function() return Config.TriggerBot.TeamCheck end, function(v) Config.TriggerBot.TeamCheck = v end)
+    UI.AddToggle(secTrig, "Ignore Downed", function() return Config.TriggerBot.IgnoreDowned end, function(v) Config.TriggerBot.IgnoreDowned = v end)
     UI.AddToggle(secTrig, "Target AI / Bots", function() return Config.TriggerBot.TargetAI end, function(v) Config.TriggerBot.TargetAI = v end)
 end
 
@@ -9819,6 +9997,7 @@ Misc._SetMenuVisible = setMenuVisible
 Misc._GetMenuVisible = function()
     return WindowVisible
 end
+Combat._IsMenuOpen = Misc._GetMenuVisible
 
 Session.Bind(MinBtn.MouseButton1Click, function()
     setMenuVisible(false)

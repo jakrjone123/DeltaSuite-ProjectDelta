@@ -3565,6 +3565,9 @@ end
 local function updateSkeletonVisual(d: { [string]: any }, model: Instance, cam: Camera, color: Color3, enabled: boolean)
     if enabled and model:IsA("Model") then
         local skelCol = strengthenColor(color)
+        local vp = cam.ViewportSize
+        local maxSegLen = math.max(vp.X, vp.Y) * 0.9
+        local margin = 120
         for i, pair in ipairs(BONE_PAIRS) do
             local line = d.Bones[i]
             local out = d.BoneOutlines and d.BoneOutlines[i]
@@ -3573,17 +3576,27 @@ local function updateSkeletonVisual(d: { [string]: any }, model: Instance, cam: 
             if line and p1 and p1:IsA("BasePart") and p2 and p2:IsA("BasePart") then
                 local v1, ok1 = cam:WorldToViewportPoint(p1.Position)
                 local v2, ok2 = cam:WorldToViewportPoint(p2.Position)
-                if ok1 and ok2 then
+                local validZ = (v1.Z > 0.35 and v2.Z > 0.35)
+                local inMargin = validZ and (ok1 or ok2 or (
+                    v1.X >= -margin and v1.X <= vp.X + margin and v1.Y >= -margin and v1.Y <= vp.Y + margin
+                    and v2.X >= -margin and v2.X <= vp.X + margin and v2.Y >= -margin and v2.Y <= vp.Y + margin
+                ))
+                if inMargin then
                     local fPos, tPos = Vector2.new(v1.X, v1.Y), Vector2.new(v2.X, v2.Y)
-                    if out then
-                        out.From = fPos
-                        out.To = tPos
-                        out.Visible = true
+                    if (fPos - tPos).Magnitude <= maxSegLen then
+                        if out then
+                            out.From = fPos
+                            out.To = tPos
+                            out.Visible = true
+                        end
+                        line.From = fPos
+                        line.To = tPos
+                        line.Color = skelCol
+                        line.Visible = true
+                    else
+                        if out then out.Visible = false end
+                        line.Visible = false
                     end
-                    line.From = fPos
-                    line.To = tPos
-                    line.Color = skelCol
-                    line.Visible = true
                 else
                     if out then out.Visible = false end
                     line.Visible = false
@@ -3684,12 +3697,22 @@ local ACTOR_BOX_SAMPLE_PARTS = {
 }
 
 local function computeActorScreenBox(model: Model, root: BasePart, cam: Camera): (boolean, number, number, number, number)
+    local vp = cam.ViewportSize
+    if vp.X <= 1 or vp.Y <= 1 then
+        return false, 0, 0, 0, 0
+    end
+    local rootZ = -cam.CFrame:PointToObjectSpace(root.Position).Z
+    if rootZ <= 0.35 then
+        return false, 0, 0, 0, 0
+    end
+
     local head = model:FindFirstChild("Head") :: BasePart?
     local minX, minY = math.huge, math.huge
     local maxX, maxY = -math.huge, -math.huge
     local anyVis = false
+    local frontCount = 0
 
-    local topAnchor = (head and head.Position or root.Position) + Vector3.new(0, 0.62, 0)
+    local topAnchor = (head and head:IsA("BasePart") and head.Position or root.Position) + Vector3.new(0, 0.62, 0)
     local botAnchor = root.Position - Vector3.new(0, 2.75, 0)
     local feet = { model:FindFirstChild("LeftFoot"), model:FindFirstChild("RightFoot") }
     local lowY = math.huge
@@ -3704,77 +3727,133 @@ local function computeActorScreenBox(model: Model, root: BasePart, cam: Camera):
 
     local t2d, tVis = cam:WorldToViewportPoint(topAnchor)
     local b2d, bVis = cam:WorldToViewportPoint(botAnchor)
-    if not tVis and not bVis then
-        return false, 0, 0, 0, 0
+    local validTop = t2d.Z > 0.35
+    local validBot = b2d.Z > 0.35
+    if validTop then
+        frontCount += 1
+        minX, maxX = math.min(minX, t2d.X), math.max(maxX, t2d.X)
+        minY, maxY = math.min(minY, t2d.Y), math.max(maxY, t2d.Y)
+        if tVis then anyVis = true end
     end
-    minY = math.min(t2d.Y, b2d.Y)
-    maxY = math.max(t2d.Y, b2d.Y)
+    if validBot then
+        frontCount += 1
+        minX, maxX = math.min(minX, b2d.X), math.max(maxX, b2d.X)
+        minY, maxY = math.min(minY, b2d.Y), math.max(maxY, b2d.Y)
+        if bVis then anyVis = true end
+    end
 
     for _, pName in ipairs(ACTOR_BOX_SAMPLE_PARTS) do
         local p = model:FindFirstChild(pName)
         if p and p:IsA("BasePart") then
             local sp, onScr = cam:WorldToViewportPoint(p.Position)
-            if onScr then
-                anyVis = true
-            end
-            if sp.Z > 0 then
+            if sp.Z > 0.35 then
+                frontCount += 1
                 minX = math.min(minX, sp.X)
                 maxX = math.max(maxX, sp.X)
                 minY = math.min(minY, sp.Y)
                 maxY = math.max(maxY, sp.Y)
+                if onScr then
+                    anyVis = true
+                end
             end
         end
     end
-    if not anyVis then
+
+    if frontCount == 0 or maxX < minX or maxY < minY then
         return false, 0, 0, 0, 0
     end
 
-    local boxH = math.max(maxY - minY, 10)
+    local root2d, rootVis = cam:WorldToViewportPoint(root.Position)
+    if root2d.Z <= 0.35 then
+        return false, 0, 0, 0, 0
+    end
+    if rootVis then
+        anyVis = true
+    end
+
+    local rawH = maxY - minY
+    if not (validTop and validBot) then
+        local focal = (vp.Y * 0.5) / math.max(math.tan(math.rad(cam.FieldOfView * 0.5)), 0.1)
+        local estH = (5.4 / math.max(rootZ, 0.8)) * focal
+        rawH = math.max(rawH, estH)
+    end
+
+    local boxH = math.clamp(rawH, 10, vp.Y * 0.90)
     local minWidth = math.max(boxH * 0.50, 8)
     local measuredW = (maxX > minX) and (maxX - minX + boxH * 0.12) or minWidth
-    local boxW = math.clamp(math.max(measuredW, minWidth), 8, math.max(boxH * 0.92, 22))
-    local cx = (t2d.X + b2d.X) * 0.5
-    return true, math.floor(cx - boxW * 0.5 + 0.5), math.floor(minY + 0.5), math.floor(boxW + 0.5), math.floor(boxH + 0.5)
+    local boxW = math.clamp(math.max(measuredW, minWidth), 8, math.min(vp.X * 0.65, math.max(boxH * 0.92, 22)))
+    local cx = (validTop and validBot and t2d.Z > 0.8 and b2d.Z > 0.8) and ((t2d.X + b2d.X) * 0.5) or root2d.X
+    local topY = (validTop and t2d.Z > 0.8) and t2d.Y or (root2d.Y - boxH * 0.48)
+
+    local bx = math.floor(cx - boxW * 0.5 + 0.5)
+    local by = math.floor(topY + 0.5)
+    local bw = math.floor(boxW + 0.5)
+    local bh = math.floor(boxH + 0.5)
+
+    local pad = 48
+    local overlapsScreen = (bx + bw >= -pad) and (bx <= vp.X + pad) and (by + bh >= -pad) and (by <= vp.Y + pad)
+    if not overlapsScreen then
+        return false, 0, 0, 0, 0
+    end
+    return true, bx, by, bw, bh
 end
 
 local function compute3DScreenBox(inst: Instance, fallbackRoot: BasePart, cam: Camera): (boolean, number, number, number, number)
+    local vp = cam.ViewportSize
+    if vp.X <= 1 or vp.Y <= 1 then
+        return false, 0, 0, 0, 0
+    end
     local cf: CFrame, sz: Vector3
     if inst:IsA("Model") then
         cf, sz = inst:GetBoundingBox()
     else
         cf, sz = fallbackRoot.CFrame, fallbackRoot.Size
     end
+    local c2d = cam:WorldToViewportPoint(cf.Position)
+    if c2d.Z <= 0.35 then
+        return false, 0, 0, 0, 0
+    end
+
     local hx, hy, hz = math.max(sz.X * 0.5, 0.35), math.max(sz.Y * 0.5, 0.35), math.max(sz.Z * 0.5, 0.35)
     local minX, minY = math.huge, math.huge
     local maxX, maxY = -math.huge, -math.huge
     local anyVis = false
+    local frontCorners = 0
 
     for sx = -1, 1, 2 do
         for sy = -1, 1, 2 do
             for szSign = -1, 1, 2 do
                 local corner = (cf * CFrame.new(hx * sx, hy * sy, hz * szSign)).Position
                 local vpPt, onScr = cam:WorldToViewportPoint(corner)
-                if onScr then
-                    anyVis = true
-                end
-                if vpPt.Z > 0 then
+                if vpPt.Z > 0.35 then
+                    frontCorners += 1
                     minX = math.min(minX, vpPt.X)
                     minY = math.min(minY, vpPt.Y)
                     maxX = math.max(maxX, vpPt.X)
                     maxY = math.max(maxY, vpPt.Y)
+                    if onScr then
+                        anyVis = true
+                    end
                 end
             end
         end
     end
 
-    if not anyVis or maxX <= minX or maxY <= minY then
+    if frontCorners < 2 or maxX <= minX or maxY <= minY then
         return false, 0, 0, 0, 0
     end
     local pad = 2
+    local w = math.clamp(math.floor((maxX - minX) + pad * 2 + 0.5), 10, math.min(900, math.floor(vp.X * 0.8)))
+    local h = math.clamp(math.floor((maxY - minY) + pad * 2 + 0.5), 10, math.min(900, math.floor(vp.Y * 0.85)))
     local x = math.floor(minX - pad + 0.5)
     local y = math.floor(minY - pad + 0.5)
-    local w = math.clamp(math.floor((maxX - minX) + pad * 2 + 0.5), 10, 900)
-    local h = math.clamp(math.floor((maxY - minY) + pad * 2 + 0.5), 10, 900)
+    local screenPad = 48
+    if (not anyVis) and ((x + w < -screenPad) or (x > vp.X + screenPad) or (y + h < -screenPad) or (y > vp.Y + screenPad)) then
+        return false, 0, 0, 0, 0
+    end
+    if x + w < -screenPad or x > vp.X + screenPad or y + h < -screenPad or y > vp.Y + screenPad then
+        return false, 0, 0, 0, 0
+    end
     return true, x, y, w, h
 end
 
@@ -3854,6 +3933,7 @@ local function hideDrawingsTable(d: { [string]: any }, hl: Highlight?, keepArrow
 end
 
 local function destroyVisualEntry(d: { [string]: any }, holder: { Highlight: Highlight? })
+    hideDrawingsTable(d, holder.Highlight, false)
     for k, v in pairs(d) do
         if k == "Corners" or k == "CornerOutlines" or k == "Bones" or k == "BoneOutlines" then
             for _, line in ipairs(v) do
@@ -3994,7 +4074,7 @@ local function renderDockedLabels(
                 elseif zoneName == "Left" then
                     lbl.Center = false
                     local rowY = sideStartY + (idx - 1) * lineStep
-                    local boundsW = lbl.TextBounds.X
+                    local boundsW = (lbl.TextBounds and lbl.TextBounds.X > 0) and lbl.TextBounds.X or (#info.Text * info.Size * 0.56)
                     lbl.Position = Vector2.new(math.floor(boxX - barPad - 4 - boundsW + 0.5), rowY)
                 elseif zoneName == "Right" then
                     lbl.Center = false
@@ -4227,7 +4307,7 @@ local function renderTagESP(tag: TagEntry, cam: Camera, vp: Vector2)
     updateOffscreenArrow(d, tag.Root.Position, cam, vp, color, cfg.Arrows == true)
 
     local sp, onScreen = cam:WorldToViewportPoint(tag.Root.Position + Vector3.new(0, 0.35, 0))
-    if not onScreen then
+    if sp.Z <= 0.35 then
         hideDrawingsTable(d, tag.Highlight, true)
         return
     end
@@ -4236,13 +4316,16 @@ local function renderTagESP(tag: TagEntry, cam: Camera, vp: Vector2)
     local hasBox, bx, by, bw, bh = false, sp.X - 7, sp.Y - 7, 14, 14
     if boxMode ~= "Off" then
         hasBox, bx, by, bw, bh = compute3DScreenBox(tag.Instance, tag.Root, cam)
-        if hasBox then
-            updateBoxVisual(d, boxMode, bx, by, bw, bh, color)
-        else
-            bx, by, bw, bh = sp.X - 7, sp.Y - 7, 14, 14
-            updateBoxVisual(d, "Off", 0, 0, 0, 0, color)
-        end
+    end
+    local boxOnScreen = hasBox and (bx + bw >= -48 and bx <= vp.X + 48 and by + bh >= -48 and by <= vp.Y + 48)
+    if not onScreen and not boxOnScreen then
+        hideDrawingsTable(d, tag.Highlight, true)
+        return
+    end
+    if boxMode ~= "Off" and hasBox then
+        updateBoxVisual(d, boxMode, bx, by, bw, bh, color)
     else
+        bx, by, bw, bh = sp.X - 7, sp.Y - 7, 14, 14
         updateBoxVisual(d, "Off", 0, 0, 0, 0, color)
     end
 
@@ -10274,7 +10357,7 @@ Session.Bind(RunService.RenderStepped, function(dt: number)
                 st.AimPointWorld
             )
             local sp, onScr = cam:WorldToViewportPoint(predWorld)
-            if onScr then
+            if onScr and sp.Z > 0.35 then
                 local pt2d = Vector2.new(sp.X, sp.Y)
                 if Combat._SilentLine then
                     Combat._SilentLine.From = Targeting.GetAimOrigin2D()
@@ -10298,18 +10381,6 @@ Session.Bind(RunService.RenderStepped, function(dt: number)
     else
         if Combat._SilentLine then Combat._SilentLine.Visible = false end
         if Combat._SilentDot then Combat._SilentDot.Visible = false end
-    end
-
-    -- ESP & Radar Renders
-    local vp = cam.ViewportSize
-    for _, entry in pairs(Actors) do
-        renderActorESP(entry, cam, vp)
-    end
-    for _, tag in pairs(WorldTags) do
-        renderTagESP(tag, cam, vp)
-    end
-    if World.RenderRadar then
-        World.RenderRadar(cam, vp)
     end
 
     -- Target HUD
@@ -10341,6 +10412,65 @@ Session.Bind(RunService.RenderStepped, function(dt: number)
             WatermarkText.Text = string.format("DELTA SUITE  |  %d FPS  |  %dms  |  Project Delta", displayFps, pingOk and pingMs or 0)
         end
     end
+end)
+
+-- Post-Camera ESP & Radar step: runs AFTER game/camera controllers so rotations never lag or leave stuck parts
+pcall(RunService.UnbindFromRenderStep, RunService, "DeltaSuiteESP")
+RunService:BindToRenderStep("DeltaSuiteESP", Enum.RenderPriority.Last.Value, function()
+    if not Session.IsAlive() then
+        return
+    end
+    if Config.Misc.PanicMode and Config.Misc.PanicHideVisuals then
+        Misc._HideAllVisualsNow()
+        return
+    end
+    local cam = Workspace.CurrentCamera
+    if not cam then
+        return
+    end
+    local vp = cam.ViewportSize
+    if vp.X <= 1 or vp.Y <= 1 then
+        return
+    end
+
+    local staleActors: { Model } = {}
+    for model, entry in pairs(Actors) do
+        if not model:IsDescendantOf(Workspace) then
+            hideDrawingsTable(entry.Draw, entry.Highlight, false)
+            table.insert(staleActors, model)
+        else
+            local ok = pcall(renderActorESP, entry, cam, vp)
+            if not ok then
+                hideDrawingsTable(entry.Draw, entry.Highlight, false)
+            end
+        end
+    end
+    for _, m in ipairs(staleActors) do
+        unregisterActor(m)
+    end
+
+    local staleTags: { Instance } = {}
+    for inst, tag in pairs(WorldTags) do
+        if not inst:IsDescendantOf(Workspace) or not tag.Root:IsDescendantOf(Workspace) then
+            hideDrawingsTable(tag.Draw, tag.Highlight, false)
+            table.insert(staleTags, inst)
+        else
+            local ok = pcall(renderTagESP, tag, cam, vp)
+            if not ok then
+                hideDrawingsTable(tag.Draw, tag.Highlight, false)
+            end
+        end
+    end
+    for _, tInst in ipairs(staleTags) do
+        unregisterWorldTag(tInst)
+    end
+
+    if World.RenderRadar then
+        pcall(World.RenderRadar, cam, vp)
+    end
+end)
+Session.OnStop(function()
+    pcall(RunService.UnbindFromRenderStep, RunService, "DeltaSuiteESP")
 end)
 
 ConfigMgr._ApplyUI = function()

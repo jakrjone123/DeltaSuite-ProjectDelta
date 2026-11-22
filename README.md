@@ -32,7 +32,7 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/jakrjone123/DeltaSuit
   - **PREVIEW interactivo en las 6 categorías ESP**:
     - **Player y Npc**: Muñeco 3D lateral con overlays en tiempo real; permite arrastrar y apilar etiquetas (`Name`, `Health`, `Distance`, `Weapon`, `KDR`, `Reports`, `Downed`) y la barra `HealthBar` exclusivamente entre **Arriba**, **Abajo**, **Izquierda** y **Derecha**.
     - **Corpse, Container, Dropped Item y Quest Items**: Cubo 3D táctico lateral con soporte en vivo de `Chams`, `Box`/`Corner` con relleno translúcido, `Skeleton` (Corpse), `Tracers`, `Arrows` y arrastre ordenado de etiquetas (`Name`, `Distance`, `Value`, `Respawn`) entre las 4 zonas.
-  - **Extractions & World**: Ubicaciones de extracción (`ExitLocations`) y ajustes rápidos de iluminación/visión.
+  - **World & Vision**: Ajustes rápidos de iluminación y visión.
 - **World**
   - **World**: `Terrain Colors` (presets `Default` / `Cyber` / `Arctic` / `Mars` / `Custom` y colores por material), `Leaves` y `Tree Trunks` (tinte de malla/`SurfaceAppearance`, transparencia y ocultación), `Water Color`, `No Grass` (`Terrain.Decoration`) y `No Mines` (desactivación segura de `PMN2`/`MON50`/minas y prompts).
   - **Features**: `Render Players`, `Boss Checker` (detección de bosses/eventos en vivo con alertas y barra HUD), `ExitLocations` (distancia, color, temporizador y tracers) y `Radar` táctico 2D rotatorio en tiempo real (jugadores, NPC/Boss, cadáveres y extracciones).

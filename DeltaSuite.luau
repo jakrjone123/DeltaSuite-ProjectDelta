@@ -482,7 +482,8 @@ local function createDefaultConfig()
             ScreenEffects = false,
             ReportNotify = true,
             ReportAlertSelf = true,
-            ReportAlertServer = true,
+            ReportAlertServer = false,
+            ReportsHUD = false,
             JoinNotify = false,
             JoinAlertFlaggedOnly = false,
             JoinLeaveAlerts = false,
@@ -812,7 +813,7 @@ function Delta.IsTeammate(player: Player): boolean
     return false
 end
 
-local PlayerMetaCache: { [Player]: { KDR: string?, Reports: number?, UpdatedAt: number } } = {}
+local PlayerMetaCache: { [Player]: { KDR: string?, ReportListFlags: number, UpdatedAt: number } } = {}
 
 local function readNumericStat(sources: { Instance? }, keys: { string }): number?
     for _, src in ipairs(sources) do
@@ -830,6 +831,37 @@ local function readNumericStat(sources: { Instance? }, keys: { string }): number
         end
     end
     return nil
+end
+
+local function findReportListFolder(reportList: Instance?, player: Player): Instance?
+    if not reportList then
+        return nil
+    end
+    local repKey = player.Name .. "_" .. tostring(player.UserId)
+    local mw = reportList:FindFirstChild("MostWanted")
+    local rec = reportList:FindFirstChild("Recent")
+    local exact = (mw and mw:FindFirstChild(repKey))
+        or (rec and rec:FindFirstChild(repKey))
+        or reportList:FindFirstChild(repKey)
+    if exact then
+        return exact
+    end
+    for _, bucket in ipairs({ mw, rec }) do
+        if bucket then
+            for _, ch in ipairs(bucket:GetChildren()) do
+                if ch:GetAttribute("UserId") == player.UserId or ch:GetAttribute("UserName") == player.Name then
+                    return ch
+                end
+            end
+        end
+    end
+    return nil
+end
+
+function Delta.IsPlayerBeingBanned(rsPlayer: Instance?): boolean
+    local status = rsPlayer and rsPlayer:FindFirstChild("Status")
+    local uac = status and status:FindFirstChild("UAC")
+    return (uac and uac:GetAttribute("BeingBanned") == true) or false
 end
 
 function Delta.GetUACReportCount(rsPlayer: Instance?): number
@@ -852,14 +884,17 @@ function Delta.GetUACReportCount(rsPlayer: Instance?): number
     return sum
 end
 
-function Delta.GetPlayerMeta(player: Player): (string?, number?)
+function Delta.GetPlayerMeta(player: Player): (string?, number, boolean)
+    local rsPlayer = Delta.GetRSPlayer(player)
+    local uacReports = Delta.GetUACReportCount(rsPlayer)
+    local beingBanned = Delta.IsPlayerBeingBanned(rsPlayer)
+
     local cached = PlayerMetaCache[player]
     local now = os.clock()
-    if cached and (now - cached.UpdatedAt) < 2.0 then
-        return cached.KDR, cached.Reports
+    if cached and (now - cached.UpdatedAt) < 1.5 then
+        return cached.KDR, math.max(uacReports, cached.ReportListFlags), beingBanned
     end
 
-    local rsPlayer = Delta.GetRSPlayer(player)
     local status = rsPlayer and rsPlayer:FindFirstChild("Status")
     local journey = status and status:FindFirstChild("Journey")
     local wipeStats = journey and journey:FindFirstChild("WipeStatistics")
@@ -868,30 +903,22 @@ function Delta.GetPlayerMeta(player: Player): (string?, number?)
     local sources: { Instance? } = { wipeStats, journey, status, rsPlayer, player, leader, statsF }
 
     local kdrStr: string? = nil
-    local reports: number = Delta.GetUACReportCount(rsPlayer)
+    local rlFlags = 0
 
     -- Check ReplicatedStorage.ReportList (MostWanted & Recent use "<PlayerName>_<UserId>" with KDR & TotalFlags)
-    local reportList = ReplicatedStorage:FindFirstChild("ReportList")
-    if reportList then
-        local repKey = player.Name .. "_" .. tostring(player.UserId)
-        local mw = reportList:FindFirstChild("MostWanted")
-        local rec = reportList:FindFirstChild("Recent")
-        local repFolder = (mw and mw:FindFirstChild(repKey))
-            or (rec and rec:FindFirstChild(repKey))
-            or reportList:FindFirstChild(repKey)
-        if repFolder then
-            local rawKdr = repFolder:GetAttribute("KDR")
-            if type(rawKdr) == "string" and rawKdr ~= "" then
-                -- Project Delta stores "Kills/Deaths/Ratio" e.g. "16366/12404/1.3"
-                local ratio = rawKdr:match("/([^/]+)$")
-                kdrStr = ratio or rawKdr
-            elseif type(rawKdr) == "number" then
-                kdrStr = string.format("%.2f", rawKdr)
-            end
-            local flags = repFolder:GetAttribute("TotalFlags")
-            if type(flags) == "number" then
-                reports = math.max(reports, flags)
-            end
+    local repFolder = findReportListFolder(ReplicatedStorage:FindFirstChild("ReportList"), player)
+    if repFolder then
+        local rawKdr = repFolder:GetAttribute("KDR")
+        if type(rawKdr) == "string" and rawKdr ~= "" then
+            -- Project Delta stores "Kills/Deaths/Ratio" e.g. "16366/12404/1.3"
+            local ratio = rawKdr:match("/([^/]+)$")
+            kdrStr = ratio or rawKdr
+        elseif type(rawKdr) == "number" then
+            kdrStr = string.format("%.2f", rawKdr)
+        end
+        local flags = repFolder:GetAttribute("TotalFlags")
+        if type(flags) == "number" then
+            rlFlags = math.max(rlFlags, flags)
         end
     end
 
@@ -909,11 +936,11 @@ function Delta.GetPlayerMeta(player: Player): (string?, number?)
 
     local statRep = readNumericStat(sources, { "TotalFlags", "Reports", "ReportCount", "TotalReports" })
     if statRep then
-        reports = math.max(reports, statRep)
+        rlFlags = math.max(rlFlags, statRep)
     end
 
-    PlayerMetaCache[player] = { KDR = kdrStr, Reports = reports, UpdatedAt = now }
-    return kdrStr, reports
+    PlayerMetaCache[player] = { KDR = kdrStr, ReportListFlags = rlFlags, UpdatedAt = now }
+    return kdrStr, math.max(uacReports, rlFlags), beingBanned
 end
 
 function Delta.GetContainerRespawnText(inst: Instance): string?
@@ -3888,12 +3915,31 @@ local function renderActorESP(entry: ActorEntry, cam: Camera, vp: Vector2)
             values.Downed = { Text = "[DOWNED]", Color = Config.PlayerESP.DownedColor, Size = math.max(fontSize - 1, 10) }
         end
         if Config.PlayerESP.KDR or Config.PlayerESP.Reports then
-            local kdrStr, repCount = Delta.GetPlayerMeta(entry.Player)
+            local kdrStr, repCount, isBeingBanned = Delta.GetPlayerMeta(entry.Player)
             if Config.PlayerESP.KDR then
-                values.KDR = { Text = "KDR: " .. (kdrStr or "N/A"), Color = Color3.fromRGB(148, 163, 184), Size = math.max(fontSize - 2, 10) }
+                values.KDR = { Text = "KDR: " .. (kdrStr or "N/A"), Color = Color3.fromRGB(168, 180, 198), Size = math.max(fontSize - 1, 11) }
             end
             if Config.PlayerESP.Reports then
-                values.Reports = { Text = "Rep: " .. tostring(repCount or 0), Color = (repCount and repCount > 0) and Config.PlayerESP.DownedColor or Color3.fromRGB(148, 163, 184), Size = math.max(fontSize - 2, 10) }
+                local r = repCount or 0
+                local repText: string
+                local repColor: Color3
+                if isBeingBanned then
+                    repText = string.format("[BANNING] REP: %d", r)
+                    repColor = Color3.fromRGB(255, 64, 64)
+                elseif r >= 15 then
+                    repText = string.format("[!] REP: %d", r)
+                    repColor = Color3.fromRGB(248, 72, 72)
+                elseif r >= 5 then
+                    repText = string.format("[!] Rep: %d", r)
+                    repColor = Color3.fromRGB(251, 146, 60)
+                elseif r >= 1 then
+                    repText = string.format("Rep: %d", r)
+                    repColor = Color3.fromRGB(250, 204, 21)
+                else
+                    repText = "Rep: 0"
+                    repColor = Color3.fromRGB(182, 194, 210)
+                end
+                values.Reports = { Text = repText, Color = repColor, Size = math.max(fontSize, 12) }
             end
         end
     end
@@ -4410,14 +4456,19 @@ Misc._ScreenActive = false
 Misc._RoleCache = {} :: { [Player]: { Rank: number, ChatTag: string, CheckedAt: number, Fetching: boolean } }
 Misc._NotifiedDetect = {} :: { [string]: boolean }
 Misc._WatchedReports = {} :: { [Instance]: boolean }
+Misc._KnownUacFlags = {} :: { [number]: number }
 Misc._LastPanic = false
 Misc._MenuWasVisible = true
 Misc._LastSlowStep = 0
+Misc._LastReportsHudTick = 0
+Misc._ShowCleanInReportsHud = false
 Misc._Notify = nil :: ((string, string, string?) -> ())?
 Misc._SetMenuVisible = nil :: ((boolean) -> ())?
 Misc._GetMenuVisible = nil :: (() -> boolean)?
 Misc._Watermark = nil :: GuiObject?
 Misc._TargetHud = nil :: GuiObject?
+Misc._ReportsHud = nil :: GuiObject?
+Misc.RefreshReportsHud = nil :: ((boolean?) -> ())?
 
 function Misc._SendNotify(title: string, body: string, kind: string?, bypassPanic: boolean?)
     if not bypassPanic and Config.Misc.PanicMode and (Config.Misc.PanicHideVisuals or Config.Misc.PanicHideMenu) then
@@ -4455,6 +4506,7 @@ function Misc._HideAllVisualsNow()
     if World._BossHudFrame then (World._BossHudFrame :: GuiObject).Visible = false end
     if Misc._Watermark then Misc._Watermark.Visible = false end
     if Misc._TargetHud then Misc._TargetHud.Visible = false end
+    if Misc._ReportsHud then Misc._ReportsHud.Visible = false end
 end
 
 function Misc.RestoreScreenEffects()
@@ -4722,6 +4774,9 @@ function Misc.SetPanicMode(on: boolean, notifyToggle: boolean?)
         if Misc._Watermark then
             Misc._Watermark.Visible = Config.Settings.Watermark
         end
+        if Misc._ReportsHud then
+            Misc._ReportsHud.Visible = Config.Misc.ReportsHUD
+        end
         if Config.Misc.PanicHideMenu and Misc._MenuWasVisible and Misc._SetMenuVisible then
             Misc._SetMenuVisible(true)
         end
@@ -4734,32 +4789,25 @@ end
 Misc._ReportStatsCache = {} :: { [Player]: { Flags: number, HSR: number, KDR: number, UpdatedAt: number } }
 
 local function readPlayerReportStats(player: Player): (number, number, number)
+    local rsPlr = Delta.GetRSPlayer(player)
+    local uacFlags = Delta.GetUACReportCount(rsPlr)
     local cached = Misc._ReportStatsCache[player]
     local now = os.clock()
-    if cached and (now - cached.UpdatedAt) < 2.0 then
-        return cached.Flags, cached.HSR, cached.KDR
+    if cached and (now - cached.UpdatedAt) < 1.5 then
+        return math.max(uacFlags, cached.Flags), cached.HSR, cached.KDR
     end
 
-    local rsPlr = Delta.GetRSPlayer(player)
-    local flags, hsr, kdr = Delta.GetUACReportCount(rsPlr), 0, 0
-    local reportList = ReplicatedStorage:FindFirstChild("ReportList")
-    if reportList then
-        local repKey = player.Name .. "_" .. tostring(player.UserId)
-        local mw = reportList:FindFirstChild("MostWanted")
-        local rec = reportList:FindFirstChild("Recent")
-        local repFolder = (mw and mw:FindFirstChild(repKey))
-            or (rec and rec:FindFirstChild(repKey))
-            or reportList:FindFirstChild(repKey)
-        if repFolder then
-            flags = math.max(flags, tonumber(repFolder:GetAttribute("TotalFlags")) or 0)
-            local rawHsr = repFolder:GetAttribute("HSR")
-            hsr = type(rawHsr) == "number" and rawHsr or (tonumber(tostring(rawHsr or ""):match("[%d%.]+")) or 0)
-            local rawKdr = repFolder:GetAttribute("KDR")
-            if type(rawKdr) == "number" then
-                kdr = rawKdr
-            elseif type(rawKdr) == "string" then
-                kdr = tonumber(rawKdr:match("/([%d%.]+)$") or rawKdr) or 0
-            end
+    local flags, hsr, kdr = uacFlags, 0, 0
+    local repFolder = findReportListFolder(ReplicatedStorage:FindFirstChild("ReportList"), player)
+    if repFolder then
+        flags = math.max(flags, tonumber(repFolder:GetAttribute("TotalFlags")) or 0)
+        local rawHsr = repFolder:GetAttribute("HSR")
+        hsr = type(rawHsr) == "number" and rawHsr or (tonumber(tostring(rawHsr or ""):match("[%d%.]+")) or 0)
+        local rawKdr = repFolder:GetAttribute("KDR")
+        if type(rawKdr) == "number" then
+            kdr = rawKdr
+        elseif type(rawKdr) == "string" then
+            kdr = tonumber(rawKdr:match("/([%d%.]+)$") or rawKdr) or 0
         end
     end
     if kdr == 0 and rsPlr then
@@ -5082,7 +5130,8 @@ function Misc.SortVaultByValue()
 end
 
 function Misc.InitListeners()
-    -- Watch every player's live Status.UAC.Reports attributes ("0".."4") & BeingBanned
+    -- Watch every in-server player's live Status.UAC.Reports ("0".."4") & BeingBanned
+    -- Wait for initial attribute replication settle & remember baseline across respawns so re-syncs never spam notifications.
     local function attachPlayerUACWatcher(plr: Player)
         task.spawn(function()
             local deadline = os.clock() + 18
@@ -5103,33 +5152,50 @@ function Misc.InitListeners()
                 return
             end
             Misc._WatchedReports[reports] = true
-            local lastSum = Delta.GetUACReportCount(rsPlr)
+
+            local uid = plr.UserId
+            local hadBaseline = (Misc._KnownUacFlags[uid] ~= nil)
+            local settledAt = os.clock() + 2.2
+            local lastSum = math.max(Delta.GetUACReportCount(rsPlr), Misc._KnownUacFlags[uid] or 0)
+            Misc._KnownUacFlags[uid] = lastSum
 
             local function onReportChanged()
                 local curSum = Delta.GetUACReportCount(rsPlr)
+                PlayerMetaCache[plr] = nil
+                Misc._ReportStatsCache[plr] = nil
+
+                if os.clock() < settledAt and not hadBaseline then
+                    lastSum = math.max(lastSum, curSum)
+                    Misc._KnownUacFlags[uid] = lastSum
+                    Misc.EvaluatePlayerDetect(plr)
+                    return
+                end
+
+                hadBaseline = true
                 if curSum > lastSum then
                     local added = curSum - lastSum
+                    local prevZeroRespawn = (lastSum == 0 and added >= 8 and plr ~= LocalPlayer)
                     lastSum = curSum
-                    PlayerMetaCache[plr] = nil
-                    Misc._ReportStatsCache[plr] = nil
+                    Misc._KnownUacFlags[uid] = curSum
                     Misc.EvaluatePlayerDetect(plr)
-                    if Config.Misc.ReportNotify then
+                    if not prevZeroRespawn and Config.Misc.ReportNotify then
                         if plr == LocalPlayer and Config.Misc.ReportAlertSelf then
                             Misc._SendNotify("Report Alert", string.format("Self UAC flag (+%d | %d total)", added, curSum), "danger")
-                        elseif plr ~= LocalPlayer and Config.Misc.ReportAlertServer then
+                        elseif plr ~= LocalPlayer and Config.Misc.ReportAlertServer and added <= 10 then
                             Misc._SendNotify("Server Report", string.format("%s flagged (+%d | %d total)", plr.DisplayName, added, curSum), "warn")
                         end
                     end
                 elseif curSum ~= lastSum then
                     lastSum = curSum
-                    PlayerMetaCache[plr] = nil
-                    Misc._ReportStatsCache[plr] = nil
+                    Misc._KnownUacFlags[uid] = math.max(Misc._KnownUacFlags[uid] or 0, curSum)
                 end
             end
 
             Session.Bind(reports.AttributeChanged, onReportChanged)
             Session.Bind(reports.ChildAdded, onReportChanged)
             Session.Bind(uac:GetAttributeChangedSignal("BeingBanned"), function()
+                PlayerMetaCache[plr] = nil
+                Misc._ReportStatsCache[plr] = nil
                 if uac:GetAttribute("BeingBanned") == true and Config.Misc.ReportNotify then
                     if plr == LocalPlayer and Config.Misc.ReportAlertSelf then
                         Misc._SendNotify("UAC Alert", "Your account entered UAC BeingBanned state!", "danger")
@@ -5138,59 +5204,58 @@ function Misc.InitListeners()
                     end
                 end
             end)
+
+            task.delay(2.2, function()
+                if plr.Parent and reports and reports.Parent and Session.IsAlive() then
+                    hadBaseline = true
+                    local liveSum = Delta.GetUACReportCount(rsPlr)
+                    lastSum = math.max(lastSum, liveSum)
+                    Misc._KnownUacFlags[uid] = lastSum
+                    PlayerMetaCache[plr] = nil
+                    Misc._ReportStatsCache[plr] = nil
+                    Misc.EvaluatePlayerDetect(plr)
+                end
+            end)
         end)
     end
 
-    -- Also listen to ReportNotification RemoteEvent if server pushes notifications
+    -- Listen to server ReportNotification remote without notifying unless relevant alerts are enabled
     local remotes = ReplicatedStorage:FindFirstChild("Remotes")
     local repNotif = remotes and remotes:FindFirstChild("ReportNotification")
     if repNotif and repNotif:IsA("RemoteEvent") then
         Session.Bind(repNotif.OnClientEvent, function(...)
-            if Config.Misc.ReportNotify and Config.Misc.ReportAlertSelf then
-                local a = ...
-                local detail = type(a) == "string" and a or "Server UAC report notification received"
-                Misc._SendNotify("Report Notification", detail, "warn")
+            if not Config.Misc.ReportNotify then
+                return
+            end
+            local a = ...
+            local detail = type(a) == "string" and a or ""
+            local mentionsSelf = detail:find(LocalPlayer.Name, 1, true) ~= nil
+            if (mentionsSelf and Config.Misc.ReportAlertSelf) or (not mentionsSelf and Config.Misc.ReportAlertServer and detail ~= "") then
+                Misc._SendNotify("Report Notification", detail ~= "" and detail or "Server UAC report notice", "warn")
             end
         end)
     end
 
-    -- Watch ReplicatedStorage.ReportList.Recent
-    local function attachRecentEntry(entry: Instance)
-        if Misc._WatchedReports[entry] then
-            return
-        end
-        Misc._WatchedReports[entry] = true
-        local lastFlags = tonumber(entry:GetAttribute("TotalFlags")) or 0
-        Session.Bind(entry:GetAttributeChangedSignal("TotalFlags"), function()
-            local cur = tonumber(entry:GetAttribute("TotalFlags")) or 0
-            if cur > lastFlags then
-                lastFlags = cur
-                if Config.Misc.ReportNotify then
-                    local isSelf = entry.Name:find("^" .. LocalPlayer.Name .. "_") ~= nil
-                    if (isSelf and Config.Misc.ReportAlertSelf) or (not isSelf and Config.Misc.ReportAlertServer) then
-                        local plrName = entry.Name:match("^(.+)_%d+$") or entry.Name
-                        Misc._SendNotify(isSelf and "Report Alert" or "Server Report", string.format("%s flagged (%d total)", plrName, cur), isSelf and "danger" or "info")
-                    end
-                end
+    -- Passively refresh cached stats when ReportList.Recent updates for players in THIS server only.
+    -- Never notify for global cross-server ReportList refreshes (which dump ~50 entries every minute).
+    local function invalidateMatchingServerPlayer(entry: Instance)
+        local uid = entry:GetAttribute("UserId")
+        local uname = entry:GetAttribute("UserName") or entry.Name:match("^(.+)_%d+$")
+        for _, p in ipairs(Players:GetPlayers()) do
+            if (uid and p.UserId == uid) or (uname and p.Name == uname) then
+                PlayerMetaCache[p] = nil
+                Misc._ReportStatsCache[p] = nil
+                Misc.EvaluatePlayerDetect(p)
+                break
             end
-        end)
+        end
     end
 
     local rl = ReplicatedStorage:FindFirstChild("ReportList")
     local recent = rl and rl:FindFirstChild("Recent")
     if recent then
-        for _, ch in ipairs(recent:GetChildren()) do
-            attachRecentEntry(ch)
-        end
         Session.Bind(recent.ChildAdded, function(entry)
-            attachRecentEntry(entry)
-            if Config.Misc.ReportNotify and Config.Misc.ReportAlertServer then
-                local isSelf = entry.Name:find("^" .. LocalPlayer.Name .. "_") ~= nil
-                if not isSelf then
-                    local plrName = entry.Name:match("^(.+)_%d+$") or entry.Name
-                    Misc._SendNotify("Server Report", string.format("%s added to recent flags", plrName), "info")
-                end
-            end
+            invalidateMatchingServerPlayer(entry)
         end)
     end
 
@@ -5238,6 +5303,8 @@ function Misc.InitListeners()
         end
         Misc._RoleCache[plr] = nil
         Misc._ReportStatsCache[plr] = nil
+        Misc._KnownUacFlags[plr.UserId] = nil
+        PlayerMetaCache[plr] = nil
         if plr ~= LocalPlayer and Config.Misc.JoinNotify and Config.Misc.JoinLeaveAlerts and (not Config.Misc.JoinAlertFlaggedOnly or wasFlagged) then
             Misc._SendNotify("Player Left", string.format("%s (@%s) disconnected", plr.DisplayName, plr.Name), "info")
         end
@@ -5254,6 +5321,12 @@ function Misc.Step()
         Misc._LastSlowStep = now
         Misc.StepFastTrade()
         Misc.StepScreenEffects()
+    end
+    if now - Misc._LastReportsHudTick >= 1.0 then
+        Misc._LastReportsHudTick = now
+        if Misc.RefreshReportsHud then
+            Misc.RefreshReportsHud(false)
+        end
     end
 end
 
@@ -5838,6 +5911,268 @@ World._Notify = UI.Notify
     World._BossHudText = bhLbl
 end)()
 
+-- Live Server Check Reports HUD (draggable, translucent, shows live UAC flags & KDR for all players)
+;(function()
+    local repHud = Instance.new("Frame")
+    repHud.Name = "ServerReportsHUD"
+    repHud.AnchorPoint = Vector2.new(1, 0)
+    repHud.Position = UDim2.new(1, -16, 0, 114)
+    repHud.Size = UDim2.fromOffset(310, 212)
+    repHud.BackgroundColor3 = THEME.BgMain
+    repHud.BackgroundTransparency = 0.22
+    repHud.Visible = false
+    repHud.ClipsDescendants = true
+    repHud.Parent = ScreenGui
+    addCorner(repHud, 8)
+    addStroke(repHud, THEME.Border, 1, 0.25)
+
+    local rhHeader = Instance.new("Frame")
+    rhHeader.Size = UDim2.new(1, 0, 0, 28)
+    rhHeader.BackgroundColor3 = THEME.BgSidebar
+    rhHeader.BackgroundTransparency = 0.24
+    rhHeader.BorderSizePixel = 0
+    rhHeader.Parent = repHud
+
+    local rhTitle = Instance.new("TextLabel")
+    rhTitle.BackgroundTransparency = 1
+    rhTitle.Position = UDim2.fromOffset(10, 0)
+    rhTitle.Size = UDim2.new(1, -110, 1, 0)
+    rhTitle.Font = Enum.Font.GothamBold
+    rhTitle.TextSize = 11
+    rhTitle.TextColor3 = THEME.TextPrimary
+    rhTitle.TextXAlignment = Enum.TextXAlignment.Left
+    rhTitle.Text = "CHECK REPORTS"
+    rhTitle.Parent = rhHeader
+
+    local rhFilterBtn = Instance.new("TextButton")
+    rhFilterBtn.Size = UDim2.fromOffset(56, 18)
+    rhFilterBtn.Position = UDim2.new(1, -84, 0.5, -9)
+    rhFilterBtn.BackgroundColor3 = THEME.BgControl
+    rhFilterBtn.Font = Enum.Font.GothamSemibold
+    rhFilterBtn.TextSize = 10
+    rhFilterBtn.TextColor3 = THEME.Accent
+    rhFilterBtn.Text = "Flagged"
+    rhFilterBtn.AutoButtonColor = false
+    rhFilterBtn.Parent = rhHeader
+    addCorner(rhFilterBtn, 4)
+    addStroke(rhFilterBtn, THEME.Border, 1, 0.35)
+
+    local rhCloseBtn = Instance.new("TextButton")
+    rhCloseBtn.Size = UDim2.fromOffset(20, 18)
+    rhCloseBtn.Position = UDim2.new(1, -24, 0.5, -9)
+    rhCloseBtn.BackgroundColor3 = THEME.BgControl
+    rhCloseBtn.Font = Enum.Font.GothamBold
+    rhCloseBtn.TextSize = 10
+    rhCloseBtn.TextColor3 = THEME.TextSecondary
+    rhCloseBtn.Text = "X"
+    rhCloseBtn.AutoButtonColor = false
+    rhCloseBtn.Parent = rhHeader
+    addCorner(rhCloseBtn, 4)
+
+    local rhScroll = Instance.new("ScrollingFrame")
+    rhScroll.Position = UDim2.fromOffset(6, 32)
+    rhScroll.Size = UDim2.new(1, -12, 1, -38)
+    rhScroll.BackgroundTransparency = 1
+    rhScroll.BorderSizePixel = 0
+    rhScroll.ScrollBarThickness = 3
+    rhScroll.ScrollBarImageColor3 = THEME.Border
+    rhScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    rhScroll.CanvasSize = UDim2.fromOffset(0, 0)
+    rhScroll.Parent = repHud
+
+    local rhList = Instance.new("UIListLayout")
+    rhList.Padding = UDim.new(0, 4)
+    rhList.SortOrder = Enum.SortOrder.LayoutOrder
+    rhList.Parent = rhScroll
+
+    -- Simple header drag for Reports HUD
+    local draggingHud = false
+    local dragStartPos: Vector2? = nil
+    local hudStartPos: UDim2? = nil
+    Session.Bind(rhHeader.InputBegan, function(inp: InputObject)
+        if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            draggingHud = true
+            dragStartPos = Vector2.new(inp.Position.X, inp.Position.Y)
+            if repHud.AnchorPoint.X ~= 0 then
+                local absPos = repHud.AbsolutePosition
+                local rootPos = ScreenGui.AbsolutePosition
+                repHud.AnchorPoint = Vector2.new(0, 0)
+                repHud.Position = UDim2.fromOffset(absPos.X - rootPos.X, absPos.Y - rootPos.Y)
+            end
+            hudStartPos = repHud.Position
+        end
+    end)
+    Session.Bind(UserInputService.InputChanged, function(inp: InputObject)
+        if draggingHud and dragStartPos and hudStartPos and inp.UserInputType == Enum.UserInputType.MouseMovement then
+            local delta = Vector2.new(inp.Position.X, inp.Position.Y) - dragStartPos
+            repHud.Position = UDim2.fromOffset(hudStartPos.X.Offset + delta.X, hudStartPos.Y.Offset + delta.Y)
+        end
+    end)
+    Session.Bind(UserInputService.InputEnded, function(inp: InputObject)
+        if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            draggingHud = false
+        end
+    end)
+
+    local lastSig = ""
+    local rowObjs: { Instance } = {}
+
+    local function severityForReport(flags: number, banning: boolean): (Color3, string)
+        if banning then
+            return Color3.fromRGB(255, 64, 64), "BAN"
+        elseif flags >= 15 then
+            return Color3.fromRGB(248, 72, 72), tostring(flags)
+        elseif flags >= 5 then
+            return Color3.fromRGB(251, 146, 60), tostring(flags)
+        elseif flags >= 1 then
+            return Color3.fromRGB(250, 204, 21), tostring(flags)
+        end
+        return Color3.fromRGB(148, 163, 184), "0"
+    end
+
+    local function refreshReportsHud(forceBuild: boolean?)
+        local hiddenByPanic = Config.Misc.PanicMode and Config.Misc.PanicHideVisuals
+        local shouldShow = (Config.Misc.ReportsHUD == true) and not hiddenByPanic
+        repHud.Visible = shouldShow
+        if not shouldShow then
+            return
+        end
+
+        local cam = Workspace.CurrentCamera
+        local myPos = cam and cam.CFrame.Position
+        local rows = {}
+        local flaggedCount = 0
+        local totalCount = 0
+        for _, plr in ipairs(Players:GetPlayers()) do
+            totalCount += 1
+            local kdrStr, repCount, isBan = Delta.GetPlayerMeta(plr)
+            local flags = repCount or 0
+            if flags > 0 or isBan then
+                flaggedCount += 1
+            end
+            if Misc._ShowCleanInReportsHud or flags > 0 or isBan or plr == LocalPlayer then
+                local distStr = "-"
+                local model = plr.Character or Workspace:FindFirstChild(plr.Name)
+                local root = model and model:IsA("Model") and (model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart)
+                if root and root:IsA("BasePart") and myPos then
+                    distStr = string.format("%.0fm", (root.Position - myPos).Magnitude)
+                end
+                table.insert(rows, {
+                    Player = plr,
+                    Flags = flags,
+                    Ban = isBan,
+                    KDR = kdrStr or "N/A",
+                    Dist = distStr,
+                    IsSelf = (plr == LocalPlayer),
+                })
+            end
+        end
+
+        table.sort(rows, function(a, b)
+            if a.Ban ~= b.Ban then return a.Ban end
+            if a.Flags ~= b.Flags then return a.Flags > b.Flags end
+            return a.Player.Name:lower() < b.Player.Name:lower()
+        end)
+
+        rhTitle.Text = string.format("CHECK REPORTS  •  %d/%d Flagged", flaggedCount, totalCount)
+        rhFilterBtn.Text = Misc._ShowCleanInReportsHud and "All" or "Flagged"
+
+        local sigParts = { rhTitle.Text, rhFilterBtn.Text }
+        for _, r in ipairs(rows) do
+            table.insert(sigParts, string.format("%d:%d:%s:%s", r.Player.UserId, r.Flags, r.Ban and "1" or "0", r.Dist))
+        end
+        local sig = table.concat(sigParts, "|")
+        if not forceBuild and sig == lastSig then
+            return
+        end
+        lastSig = sig
+
+        for _, obj in ipairs(rowObjs) do
+            obj:Destroy()
+        end
+        table.clear(rowObjs)
+
+        if #rows == 0 then
+            local emptyLbl = Instance.new("TextLabel")
+            emptyLbl.Size = UDim2.new(1, 0, 0, 32)
+            emptyLbl.BackgroundTransparency = 1
+            emptyLbl.Font = Enum.Font.GothamMedium
+            emptyLbl.TextSize = 11
+            emptyLbl.TextColor3 = THEME.TextSecondary
+            emptyLbl.Text = "No reported players in this server."
+            emptyLbl.Parent = rhScroll
+            table.insert(rowObjs, emptyLbl)
+            repHud.Size = UDim2.fromOffset(310, 74)
+            return
+        end
+
+        for i, r in ipairs(rows) do
+            local row = Instance.new("Frame")
+            row.LayoutOrder = i
+            row.Size = UDim2.new(1, -2, 0, 24)
+            row.BackgroundColor3 = THEME.BgControl
+            row.BackgroundTransparency = 0.25
+            row.Parent = rhScroll
+            addCorner(row, 4)
+
+            local badgeCol, badgeText = severityForReport(r.Flags, r.Ban)
+            local badge = Instance.new("TextLabel")
+            badge.Size = UDim2.fromOffset(36, 18)
+            badge.Position = UDim2.fromOffset(4, 3)
+            badge.BackgroundColor3 = badgeCol
+            badge.BackgroundTransparency = 0.15
+            badge.Font = Enum.Font.GothamBold
+            badge.TextSize = 10
+            badge.TextColor3 = Color3.fromRGB(10, 12, 18)
+            badge.Text = badgeText
+            badge.Parent = row
+            addCorner(badge, 4)
+
+            local nameLbl = Instance.new("TextLabel")
+            nameLbl.BackgroundTransparency = 1
+            nameLbl.Position = UDim2.fromOffset(46, 0)
+            nameLbl.Size = UDim2.new(1, -138, 1, 0)
+            nameLbl.Font = r.Flags > 0 and Enum.Font.GothamBold or Enum.Font.GothamMedium
+            nameLbl.TextSize = 11
+            nameLbl.TextColor3 = r.IsSelf and THEME.Accent or (r.Flags > 0 and badgeCol or THEME.TextPrimary)
+            nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+            nameLbl.TextTruncate = Enum.TextTruncate.AtEnd
+            nameLbl.Text = r.Player.DisplayName .. (r.IsSelf and " (You)" or "")
+            nameLbl.Parent = row
+
+            local metaLbl = Instance.new("TextLabel")
+            metaLbl.BackgroundTransparency = 1
+            metaLbl.Position = UDim2.new(1, -90, 0, 0)
+            metaLbl.Size = UDim2.fromOffset(84, 24)
+            metaLbl.Font = Enum.Font.Gotham
+            metaLbl.TextSize = 10
+            metaLbl.TextColor3 = THEME.TextSecondary
+            metaLbl.TextXAlignment = Enum.TextXAlignment.Right
+            metaLbl.Text = string.format("KD:%s  %s", r.KDR, r.Dist)
+            metaLbl.Parent = row
+
+            table.insert(rowObjs, row)
+        end
+
+        local targetH = math.clamp(38 + #rows * 28, 86, 260)
+        repHud.Size = UDim2.fromOffset(310, targetH)
+    end
+
+    Session.Bind(rhFilterBtn.MouseButton1Click, function()
+        Misc._ShowCleanInReportsHud = not Misc._ShowCleanInReportsHud
+        refreshReportsHud(true)
+    end)
+
+    Session.Bind(rhCloseBtn.MouseButton1Click, function()
+        Config.Misc.ReportsHUD = false
+        repHud.Visible = false
+        UI.RefreshAll()
+    end)
+
+    Misc._ReportsHud = repHud
+    Misc.RefreshReportsHud = refreshReportsHud
+end)()
+
 -- Target Lock HUD (Top Center-Bottom)
 local TargetHudFrame = Instance.new("Frame")
 TargetHudFrame.Name = "TargetHUD"
@@ -6144,6 +6479,9 @@ function UI.ApplyGlassTheme()
     TargetHudFrame.BackgroundTransparency = math.clamp(g + 0.04, 0.10, 0.72)
     if World._BossHudFrame and (World._BossHudFrame :: Instance).Parent then
         (World._BossHudFrame :: Frame).BackgroundTransparency = math.clamp(g + 0.06, 0.10, 0.75)
+    end
+    if Misc._ReportsHud and (Misc._ReportsHud :: Instance).Parent then
+        (Misc._ReportsHud :: Frame).BackgroundTransparency = math.clamp(g + 0.04, 0.12, 0.72)
     end
     for _, rec in ipairs(UI._GlassCards) do
         if rec.Frame.Parent then
@@ -7817,7 +8155,7 @@ do
         UI.AddToggle(p, "Health", function() return Config.PlayerESP.HealthText end, function(v) Config.PlayerESP.HealthText = v end)
         UI.AddToggle(p, "Distance", function() return Config.PlayerESP.Distance end, function(v) Config.PlayerESP.Distance = v end)
         UI.AddToggle(p, "KDR", function() return Config.PlayerESP.KDR end, function(v) Config.PlayerESP.KDR = v end)
-        UI.AddToggle(p, "Reports", function() return Config.PlayerESP.Reports end, function(v) Config.PlayerESP.Reports = v end)
+        UI.AddToggle(p, "Check Reports", function() return Config.PlayerESP.Reports end, function(v) Config.PlayerESP.Reports = v end)
         UI.AddToggle(p, "Tracers", function() return Config.PlayerESP.Tracers end, function(v) Config.PlayerESP.Tracers = v end)
         UI.AddToggle(p, "Arrows", function() return Config.PlayerESP.Arrows end, function(v) Config.PlayerESP.Arrows = v end)
         UI.AddToggle(p, "Skeleton", function() return Config.PlayerESP.Skeleton end, function(v) Config.PlayerESP.Skeleton = v end)
@@ -8254,10 +8592,41 @@ do
     addDetectItem("Tester", "Tester")
     addDetectItem("Moderator", "Moderator")
     addDetectItem("Cheater", "Cheater", function(pop)
-        addPopupSlider(pop, "Min Flags", 5, 100, 1, "", function() return Config.Detect.CheaterMinFlags end, function(v) Config.Detect.CheaterMinFlags = v end)
+        addPopupSlider(pop, "Min Flags", 3, 100, 1, "", function() return Config.Detect.CheaterMinFlags end, function(v) Config.Detect.CheaterMinFlags = v end)
         addPopupSlider(pop, "Min HSR", 40, 100, 5, "%", function() return Config.Detect.CheaterMinHSR end, function(v) Config.Detect.CheaterMinHSR = v end)
         addPopupSlider(pop, "Min KDR", 1.5, 15.0, 0.5, "", function() return Config.Detect.CheaterMinKDR end, function(v) Config.Detect.CheaterMinKDR = v end)
     end, 188)
+
+    local secCheckRep = UI.AddSection(MiscTab, "Right", "Check Reports")
+    UI.AddToggle(secCheckRep, "Reports HUD", function() return Config.Misc.ReportsHUD end, function(v)
+        Config.Misc.ReportsHUD = v
+        if Misc.RefreshReportsHud then
+            Misc.RefreshReportsHud(true)
+        end
+    end)
+    UI.AddButton(secCheckRep, "Scan Server Reports", "accent", function()
+        Config.Misc.ReportsHUD = true
+        if Misc.RefreshReportsHud then
+            Misc.RefreshReportsHud(true)
+        end
+        UI.RefreshAll()
+        local flagged, topName, topRep = 0, "", 0
+        for _, plr in ipairs(Players:GetPlayers()) do
+            local _, rep = Delta.GetPlayerMeta(plr)
+            if (rep or 0) > 0 then
+                flagged += 1
+                if (rep or 0) > topRep then
+                    topRep = rep or 0
+                    topName = plr.DisplayName
+                end
+            end
+        end
+        if flagged > 0 then
+            Misc._SendNotify("Check Reports", string.format("%d flagged player(s) | Top: %s (%d rep)", flagged, topName, topRep), "warn", true)
+        else
+            Misc._SendNotify("Check Reports", "All server players currently have 0 reports.", "success", true)
+        end
+    end)
 
     local secVault = UI.AddSection(MiscTab, "Right", "Vault Sort")
     UI.AddButton(secVault, "Sort By Value", "accent", function()
@@ -8357,6 +8726,9 @@ do
         SideFooter.Text = formatBindName(Config.Settings.MenuKey) .. " to Toggle"
         UI.ApplyGlassTheme()
         UI.RefreshAll()
+        if Misc.RefreshReportsHud then
+            Misc.RefreshReportsHud(true)
+        end
         UI.Notify("Config Reset", "All settings restored to defaults.", "info")
     end)
     UI.AddButton(secSess, "Unload Delta Suite", "danger", function()
@@ -8479,26 +8851,37 @@ end
     })
     stageGrad.Parent = Stage
 
-    -- Pedestal plate underneath dummy / cube
+    -- Sleek Dual-Ring Pedestal plate underneath dummy / cube
     local Pedestal = Instance.new("Frame")
     Pedestal.AnchorPoint = Vector2.new(0.5, 0.5)
     Pedestal.Position = UDim2.fromOffset(curBoxX + curBoxW * 0.5, curBoxY + curBoxH - 2)
-    Pedestal.Size = UDim2.fromOffset(112, 22)
-    Pedestal.BackgroundColor3 = Color3.fromRGB(22, 29, 43)
-    Pedestal.BackgroundTransparency = 0.25
+    Pedestal.Size = UDim2.fromOffset(118, 22)
+    Pedestal.BackgroundColor3 = Color3.fromRGB(17, 23, 35)
+    Pedestal.BackgroundTransparency = 0.22
     Pedestal.ZIndex = 2
     Pedestal.Parent = Stage
     addCorner(Pedestal, 11)
-    addStroke(Pedestal, THEME.Border, 1, 0.2)
+    local pedestalStroke = addStroke(Pedestal, THEME.Accent, 1, 0.45)
 
-    -- 3D ViewportFrame in center (switches between R15 Character & Isometric Loot Cube)
+    local PedestalInner = Instance.new("Frame")
+    PedestalInner.AnchorPoint = Vector2.new(0.5, 0.5)
+    PedestalInner.Position = UDim2.fromScale(0.5, 0.5)
+    PedestalInner.Size = UDim2.new(1, -18, 1, -8)
+    PedestalInner.BackgroundColor3 = Color3.fromRGB(28, 37, 56)
+    PedestalInner.BackgroundTransparency = 0.35
+    PedestalInner.ZIndex = 2
+    PedestalInner.Parent = Pedestal
+    addCorner(PedestalInner, 8)
+    local pedestalInnerStroke = addStroke(PedestalInner, THEME.Border, 1, 0.35)
+
+    -- 3D ViewportFrame in center (switches between Sculpted R15 Tactical Operator & Loot Cube)
     local CharViewport = Instance.new("ViewportFrame")
     CharViewport.Position = UDim2.fromOffset(curBoxX - 18, curBoxY - 12)
     CharViewport.Size = UDim2.fromOffset(curBoxW + 36, curBoxH + 22)
     CharViewport.BackgroundTransparency = 1
-    CharViewport.Ambient = Color3.fromRGB(170, 182, 204)
-    CharViewport.LightColor = Color3.fromRGB(255, 255, 255)
-    CharViewport.LightDirection = Vector3.new(-0.35, -0.75, -0.55)
+    CharViewport.Ambient = Color3.fromRGB(134, 150, 178)
+    CharViewport.LightColor = Color3.fromRGB(238, 246, 255)
+    CharViewport.LightDirection = Vector3.new(-0.55, -0.72, -0.68)
     CharViewport.ZIndex = 3
     CharViewport.Parent = Stage
 
@@ -8507,31 +8890,152 @@ end
 
     local DummyCam = Instance.new("Camera")
     DummyCam.FieldOfView = 38
-    DummyCam.CFrame = CFrame.lookAt(Vector3.new(0, 0.25, 7.6), Vector3.new(0, 0.1, 0))
+    DummyCam.CFrame = CFrame.lookAt(Vector3.new(0.24, 0.24, 7.65), Vector3.new(0, 0.04, 0))
     DummyCam.Parent = CharViewport
     CharViewport.CurrentCamera = DummyCam
 
-    local DummyParts: { BasePart } = {}
+    local DummyModel = Instance.new("Model")
+    DummyModel.Name = "TacticalOperator"
+    DummyModel.Parent = WorldM
+
+    local DummyParts: { { Part: BasePart, Role: string } } = {}
+    local DummySkelWorldSegs: { { Vector3 } } = {}
     do
-        local rigSpecs = {
-            { "Head", Vector3.new(1.12, 1.12, 1.12), Vector3.new(0, 2.08, 0) },
-            { "UpperTorso", Vector3.new(1.88, 1.25, 0.96), Vector3.new(0, 0.85, 0) },
-            { "LowerTorso", Vector3.new(1.76, 0.72, 0.92), Vector3.new(0, -0.14, 0) },
-            { "LeftArm", Vector3.new(0.86, 1.92, 0.88), Vector3.new(-1.44, 0.48, 0) },
-            { "RightArm", Vector3.new(0.86, 1.92, 0.88), Vector3.new(1.44, 0.48, 0) },
-            { "LeftLeg", Vector3.new(0.88, 1.95, 0.92), Vector3.new(-0.49, -1.52, 0) },
-            { "RightLeg", Vector3.new(0.88, 1.95, 0.92), Vector3.new(0.49, -1.52, 0) },
-        }
-        for _, spec in ipairs(rigSpecs) do
+        -- 3/4 Hero Tactical Stance (+Z faces Camera)
+        local rigCF = CFrame.new(0, 0, 0) * CFrame.Angles(0, math.rad(16), 0)
+
+        local function addRigPart(
+            name: string,
+            size: Vector3,
+            localCF: CFrame,
+            role: string,
+            meshType: Enum.MeshType?,
+            meshScale: Vector3?,
+            mat: Enum.Material?
+        ): BasePart
             local p = Instance.new("Part")
-            p.Name = spec[1]
-            p.Size = spec[2]
-            p.Position = spec[3]
+            p.Name = name
+            p.Size = size
+            p.CFrame = rigCF * localCF
             p.Anchored = true
-            p.Material = Enum.Material.SmoothPlastic
-            p.Color = Color3.fromRGB(36, 44, 61)
-            p.Parent = WorldM
-            table.insert(DummyParts, p)
+            p.Material = mat or Enum.Material.SmoothPlastic
+            p.TopSurface = Enum.SurfaceType.Smooth
+            p.BottomSurface = Enum.SurfaceType.Smooth
+            p.Parent = DummyModel
+            if meshType then
+                local m = Instance.new("SpecialMesh")
+                m.MeshType = meshType
+                if meshScale then
+                    m.Scale = meshScale
+                end
+                m.Parent = p
+            end
+            table.insert(DummyParts, { Part = p, Role = role })
+            return p
+        end
+
+        local function addLimbSeg(name: string, a: Vector3, b: Vector3, width: number, depth: number, role: string)
+            local diff = b - a
+            local len = diff.Magnitude
+            local mid = (a + b) * 0.5
+            local unit = diff / math.max(len, 0.001)
+            local up = math.abs(unit:Dot(Vector3.yAxis)) > 0.94 and Vector3.zAxis or Vector3.yAxis
+            addRigPart(name, Vector3.new(width, depth, len + 0.14), CFrame.lookAt(mid, b, up), role)
+        end
+
+        -- Rig Joint Positions (rig-local space, +Z forward toward camera)
+        local j = {
+            HeadTop = Vector3.new(0, 2.26, 0.02),
+            HeadMid = Vector3.new(0, 1.82, 0.02),
+            Neck = Vector3.new(0, 1.38, 0.02),
+            Chest = Vector3.new(0, 1.02, 0.02),
+            Pelvis = Vector3.new(0, 0.04, 0),
+            LShoulder = Vector3.new(0.84, 1.18, 0.02),
+            LElbow = Vector3.new(1.00, 0.56, 0.14),
+            LHand = Vector3.new(0.28, 0.34, 0.56),
+            RShoulder = Vector3.new(-0.84, 1.18, 0.02),
+            RElbow = Vector3.new(-0.98, 0.58, 0.18),
+            RHand = Vector3.new(-0.34, 0.42, 0.62),
+            LHip = Vector3.new(0.37, -0.10, 0),
+            LKnee = Vector3.new(0.42, -1.04, 0.14),
+            LFoot = Vector3.new(0.45, -1.94, 0.04),
+            RHip = Vector3.new(-0.37, -0.10, 0),
+            RKnee = Vector3.new(-0.41, -1.02, -0.04),
+            RFoot = Vector3.new(-0.44, -1.94, -0.10),
+        }
+
+        -- Rounded R15 Head, Balaclava Collar, Tactical Helmet, EarPro & Visor
+        addRigPart("Head", Vector3.new(1.00, 1.00, 1.00), CFrame.new(j.HeadMid), "Skin", Enum.MeshType.Head, Vector3.new(1.06, 1.08, 1.06))
+        addRigPart("Neck", Vector3.new(0.48, 0.34, 0.48), CFrame.new(0, 1.38, 0.01), "Skin", Enum.MeshType.Cylinder)
+        addRigPart("HelmetCap", Vector3.new(1.16, 0.66, 1.22), CFrame.new(0, 2.02, 0.01), "Armor", Enum.MeshType.Sphere)
+        addRigPart("HelmetRim", Vector3.new(1.10, 0.12, 1.12), CFrame.new(0, 1.88, 0.04) * CFrame.Angles(math.rad(-6), 0, 0), "Armor", Enum.MeshType.Sphere)
+        addRigPart("NVGMount", Vector3.new(0.24, 0.16, 0.12), CFrame.new(0, 2.00, 0.57), "Gear")
+        addRigPart("HeadsetL", Vector3.new(0.14, 0.36, 0.30), CFrame.new(0.55, 1.78, 0), "Gear", Enum.MeshType.Sphere)
+        addRigPart("HeadsetR", Vector3.new(0.14, 0.36, 0.30), CFrame.new(-0.55, 1.78, 0), "Gear", Enum.MeshType.Sphere)
+        addRigPart("Visor", Vector3.new(0.84, 0.22, 0.32), CFrame.new(0, 1.82, 0.43), "Visor", Enum.MeshType.Sphere, nil, Enum.Material.Neon)
+
+        -- Sculpted Torso, Plate Carrier Rig, Pouches, Belt & Drop Holster
+        addRigPart("UpperTorso", Vector3.new(1.42, 1.08, 0.72), CFrame.new(0, 0.86, 0), "Base")
+        addRigPart("LowerTorso", Vector3.new(1.30, 0.48, 0.68), CFrame.new(0, 0.12, 0), "Base")
+        addRigPart("PlateCarrier", Vector3.new(1.18, 0.88, 0.84), CFrame.new(0, 0.86, 0.02), "Armor")
+        addRigPart("ShoulderPadL", Vector3.new(0.36, 0.22, 0.76), CFrame.new(0.58, 1.32, 0.01) * CFrame.Angles(0, 0, math.rad(-14)), "Armor")
+        addRigPart("ShoulderPadR", Vector3.new(0.36, 0.22, 0.76), CFrame.new(-0.58, 1.32, 0.01) * CFrame.Angles(0, 0, math.rad(14)), "Armor")
+        for idx = -1, 1 do
+            addRigPart("MagPouch" .. tostring(idx + 2), Vector3.new(0.26, 0.36, 0.16), CFrame.new(idx * 0.33, 0.64, 0.47), "Gear")
+        end
+        addRigPart("AdminPouch", Vector3.new(0.54, 0.22, 0.14), CFrame.new(0, 1.02, 0.46), "Gear")
+        addRigPart("DutyBelt", Vector3.new(1.38, 0.20, 0.78), CFrame.new(0, 0.06, 0), "Gear")
+        addRigPart("BeltBuckle", Vector3.new(0.26, 0.18, 0.10), CFrame.new(0, 0.06, 0.38), "Armor")
+        addRigPart("Holster", Vector3.new(0.22, 0.42, 0.34), CFrame.new(-0.62, -0.36, 0.04) * CFrame.Angles(0, 0, math.rad(-4)), "Gear")
+
+        -- Articulated R15 Arms, Forearms, Gloves & Compact Tactical Carbine (Low-Ready)
+        addLimbSeg("LeftUpperArm", j.LShoulder, j.LElbow, 0.48, 0.48, "Base")
+        addLimbSeg("LeftLowerArm", j.LElbow, j.LHand, 0.42, 0.42, "Armor")
+        addRigPart("LeftHand", Vector3.new(0.32, 0.30, 0.32), CFrame.new(j.LHand), "Gear", Enum.MeshType.Sphere)
+        addLimbSeg("RightUpperArm", j.RShoulder, j.RElbow, 0.48, 0.48, "Base")
+        addLimbSeg("RightLowerArm", j.RElbow, j.RHand, 0.42, 0.42, "Armor")
+        addRigPart("RightHand", Vector3.new(0.32, 0.30, 0.32), CFrame.new(j.RHand), "Gear", Enum.MeshType.Sphere)
+
+        do
+            local gunMid = (j.LHand + j.RHand) * 0.5 + Vector3.new(0, -0.02, 0.06)
+            local gunCF = CFrame.lookAt(gunMid, j.RHand + Vector3.new(-0.55, -0.10, 0.18))
+            addRigPart("CarbineBody", Vector3.new(0.13, 0.22, 0.88), gunCF, "Gear")
+            addRigPart("CarbineBarrel", Vector3.new(0.08, 0.08, 0.62), gunCF * CFrame.new(0, 0.03, -0.68), "Gear")
+            addRigPart("CarbineStock", Vector3.new(0.11, 0.26, 0.44), gunCF * CFrame.new(0, -0.03, 0.56), "Armor")
+            addRigPart("CarbineMag", Vector3.new(0.10, 0.34, 0.16), gunCF * CFrame.new(0, -0.24, -0.10) * CFrame.Angles(math.rad(-14), 0, 0), "Gear")
+            addRigPart("CarbineOptic", Vector3.new(0.11, 0.12, 0.22), gunCF * CFrame.new(0, 0.16, 0.05), "Armor")
+        end
+
+        -- Articulated R15 Legs, Armored Knee Pads & Heavy Combat Boots
+        addLimbSeg("LeftThigh", j.LHip, j.LKnee, 0.62, 0.66, "Base")
+        addLimbSeg("LeftShin", j.LKnee, j.LFoot, 0.54, 0.58, "Base")
+        addRigPart("LeftKneePad", Vector3.new(0.42, 0.28, 0.22), CFrame.new(j.LKnee + Vector3.new(0, 0.02, 0.28)), "Armor", Enum.MeshType.Sphere)
+        addRigPart("LeftBoot", Vector3.new(0.54, 0.32, 0.84), CFrame.new(j.LFoot + Vector3.new(0.02, -0.06, 0.12)) * CFrame.Angles(0, math.rad(-6), 0), "Gear")
+
+        addLimbSeg("RightThigh", j.RHip, j.RKnee, 0.62, 0.66, "Base")
+        addLimbSeg("RightShin", j.RKnee, j.RFoot, 0.54, 0.58, "Base")
+        addRigPart("RightKneePad", Vector3.new(0.42, 0.28, 0.22), CFrame.new(j.RKnee + Vector3.new(0, 0.02, 0.28)), "Armor", Enum.MeshType.Sphere)
+        addRigPart("RightBoot", Vector3.new(0.54, 0.32, 0.84), CFrame.new(j.RFoot + Vector3.new(-0.02, -0.06, 0.12)) * CFrame.Angles(0, math.rad(4), 0), "Gear")
+
+        -- Exact 3D Skeleton bone segments (projected dynamically onto Stage in applyStageGeometry)
+        local jointPairs = {
+            { j.HeadTop, j.Neck },
+            { j.Neck, j.Pelvis },
+            { j.Neck, j.LShoulder },
+            { j.LShoulder, j.LElbow },
+            { j.LElbow, j.LHand },
+            { j.Neck, j.RShoulder },
+            { j.RShoulder, j.RElbow },
+            { j.RElbow, j.RHand },
+            { j.Pelvis, j.LHip },
+            { j.LHip, j.LKnee },
+            { j.LKnee, j.LFoot },
+            { j.Pelvis, j.RHip },
+            { j.RHip, j.RKnee },
+            { j.RKnee, j.RFoot },
+        }
+        for _, pair in ipairs(jointPairs) do
+            table.insert(DummySkelWorldSegs, { rigCF:PointToWorldSpace(pair[1]), rigCF:PointToWorldSpace(pair[2]) })
         end
     end
 
@@ -8743,9 +9247,7 @@ end
         BoxOutlineFrame.Size = UDim2.fromOffset(curBoxW, curBoxH)
 
         if isCube then
-            for _, p in ipairs(DummyParts) do
-                p.Parent = nil
-            end
+            DummyModel.Parent = nil
             for _, p in ipairs(CubeParts) do
                 p.Parent = WorldM
             end
@@ -8753,9 +9255,7 @@ end
             for _, p in ipairs(CubeParts) do
                 p.Parent = nil
             end
-            for _, p in ipairs(DummyParts) do
-                p.Parent = WorldM
-            end
+            DummyModel.Parent = WorldM
         end
 
         local cw, ch = isCube and 16 or 15, isCube and 16 or 18
@@ -8771,18 +9271,43 @@ end
             cf.Size = UDim2.fromOffset(sp[3], sp[4])
         end
 
-        local skPadX = isCube and curBoxW * 0.14 or 0
-        local skPadY = isCube and curBoxH * 0.08 or 0
-        local skX, skY = curBoxX + skPadX, curBoxY + skPadY
-        local skW, skH = curBoxW - skPadX * 2, curBoxH - skPadY * 2
-        for i, seg in ipairs(SKEL_NORM_SEGS) do
-            local p1 = Vector2.new(skX + seg[1].X * skW, skY + seg[1].Y * skH)
-            local p2 = Vector2.new(skX + seg[2].X * skW, skY + seg[2].Y * skH)
-            local diff = p2 - p1
-            local line = SkelLines[i]
-            line.Position = UDim2.fromOffset((p1.X + p2.X) * 0.5, (p1.Y + p2.Y) * 0.5)
-            line.Size = UDim2.fromOffset(math.max(diff.Magnitude, 2), 2)
-            line.Rotation = math.deg(math.atan2(diff.Y, diff.X))
+        if not isCube then
+            local vpX, vpY = curBoxX - 18, curBoxY - 12
+            local vpW, vpH = curBoxW + 36, curBoxH + 22
+            local halfTan = math.tan(math.rad(DummyCam.FieldOfView * 0.5))
+            local aspect = vpW / vpH
+            local camCF = DummyCam.CFrame
+            local function projectDummyPt(wp: Vector3): Vector2
+                local rel = camCF:PointToObjectSpace(wp)
+                local zDist = math.max(-rel.Z, 0.1)
+                local halfH = zDist * halfTan
+                local halfW = halfH * aspect
+                local u = 0.5 + rel.X / (2 * halfW)
+                local v = 0.5 - rel.Y / (2 * halfH)
+                return Vector2.new(vpX + u * vpW, vpY + v * vpH)
+            end
+            for i, seg in ipairs(DummySkelWorldSegs) do
+                local p1 = projectDummyPt(seg[1])
+                local p2 = projectDummyPt(seg[2])
+                local diff = p2 - p1
+                local line = SkelLines[i]
+                line.Position = UDim2.fromOffset((p1.X + p2.X) * 0.5, (p1.Y + p2.Y) * 0.5)
+                line.Size = UDim2.fromOffset(math.max(diff.Magnitude, 2), 2)
+                line.Rotation = math.deg(math.atan2(diff.Y, diff.X))
+            end
+        else
+            local skPadX, skPadY = curBoxW * 0.14, curBoxH * 0.08
+            local skX, skY = curBoxX + skPadX, curBoxY + skPadY
+            local skW, skH = curBoxW - skPadX * 2, curBoxH - skPadY * 2
+            for i, seg in ipairs(SKEL_NORM_SEGS) do
+                local p1 = Vector2.new(skX + seg[1].X * skW, skY + seg[1].Y * skH)
+                local p2 = Vector2.new(skX + seg[2].X * skW, skY + seg[2].Y * skH)
+                local diff = p2 - p1
+                local line = SkelLines[i]
+                line.Position = UDim2.fromOffset((p1.X + p2.X) * 0.5, (p1.Y + p2.Y) * 0.5)
+                line.Size = UDim2.fromOffset(math.max(diff.Magnitude, 2), 2)
+                line.Rotation = math.deg(math.atan2(diff.Y, diff.X))
+            end
         end
 
         ZONE_BOUNDS.Top = { X = 6, Y = 4, W = STAGE_W - 12, H = curBoxY - 8 }
@@ -8802,7 +9327,7 @@ end
         Health = "100 HP",
         Weapon = "AK74",
         KDR = "KDR: 1.35",
-        Reports = "Rep: 1",
+        Reports = "[!] Rep: 12",
         Downed = "[DOWNED]",
         Value = "$8.2k",
         Respawn = "Ready",
@@ -8830,7 +9355,7 @@ end
                     map.KDR = { Text = "KDR: 1.35", Color = Color3.fromRGB(148, 163, 184) }
                 end
                 if cfg.Reports then
-                    map.Reports = { Text = "Rep: 1", Color = Config.PlayerESP.DownedColor }
+                    map.Reports = { Text = "[!] Rep: 12", Color = Color3.fromRGB(251, 146, 60) }
                 end
                 if cfg.DownedBadge then
                     map.Downed = { Text = "[DOWNED]", Color = Config.PlayerESP.DownedColor }
@@ -8939,19 +9464,49 @@ end
         local chamsOn = isCube and (cfg.Chams == true) or (cfg.Highlights == true)
         local chamsCol = cfg.ChamsFill or primaryCol
 
-        -- Dummy / Cube appearance (Chams / Highlights vs Default)
+        -- Dummy / Cube appearance (Chams / Highlights vs Sculpted Studio Shading)
+        pedestalStroke.Color = chamsOn and chamsCol or primaryCol
+        pedestalInnerStroke.Color = chamsOn and (cfg.ChamsOutline or Color3.new(1, 1, 1)) or THEME.Border
         if isCube then
             local lidCol = chamsOn and chamsCol:Lerp(Color3.new(1, 1, 1), 0.14) or Color3.fromRGB(48, 59, 80)
             local bandCol = chamsOn and (cfg.ChamsOutline or Color3.new(1, 1, 1)) or primaryCol:Lerp(Color3.fromRGB(48, 59, 80), 0.45)
             if CubeParts[1] then CubeParts[1].Color = chamsOn and chamsCol or Color3.fromRGB(36, 44, 61) end
             if CubeParts[2] then CubeParts[2].Color = lidCol end
             if CubeParts[3] then CubeParts[3].Color = bandCol end
+            CharViewport.ImageColor3 = chamsOn and chamsCol or Color3.new(1, 1, 1)
         else
-            for _, part in ipairs(DummyParts) do
-                part.Color = chamsOn and chamsCol or Color3.fromRGB(36, 44, 61)
+            local outlineGlow = cfg.ChamsOutline or Color3.new(1, 1, 1)
+            local visorAccent = primaryCol:Lerp(Color3.new(1, 1, 1), 0.25)
+            for _, rec in ipairs(DummyParts) do
+                local role = rec.Role
+                if chamsOn then
+                    if role == "Armor" then
+                        rec.Part.Color = chamsCol:Lerp(outlineGlow, 0.20)
+                    elseif role == "Gear" then
+                        rec.Part.Color = chamsCol:Lerp(Color3.fromRGB(14, 18, 28), 0.24)
+                    elseif role == "Visor" then
+                        rec.Part.Color = outlineGlow
+                    elseif role == "Skin" then
+                        rec.Part.Color = chamsCol:Lerp(Color3.new(1, 1, 1), 0.08)
+                    else
+                        rec.Part.Color = chamsCol
+                    end
+                else
+                    if role == "Armor" then
+                        rec.Part.Color = Color3.fromRGB(30, 38, 55)
+                    elseif role == "Gear" then
+                        rec.Part.Color = Color3.fromRGB(20, 25, 36)
+                    elseif role == "Skin" then
+                        rec.Part.Color = Color3.fromRGB(42, 51, 70)
+                    elseif role == "Visor" then
+                        rec.Part.Color = visorAccent
+                    else
+                        rec.Part.Color = Color3.fromRGB(52, 64, 88)
+                    end
+                end
             end
+            CharViewport.ImageColor3 = Color3.new(1, 1, 1)
         end
-        CharViewport.ImageColor3 = chamsOn and chamsCol or Color3.new(1, 1, 1)
 
         -- Fill, Box & Corners
         BoxFillFrame.Visible = (cfg.Box == "2D" or cfg.Box == "Corner")
@@ -9511,6 +10066,9 @@ ConfigMgr._ApplyUI = function()
     SideFooter.Text = formatBindName(Config.Settings.MenuKey) .. " to Toggle"
     UI.ApplyGlassTheme()
     UI.RefreshAll()
+    if Misc.RefreshReportsHud then
+        Misc.RefreshReportsHud(true)
+    end
     if type(UI.Preview.Refresh) == "function" then
         UI.Preview.Refresh()
     end

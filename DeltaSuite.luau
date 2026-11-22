@@ -695,6 +695,14 @@ local SquadMemberCache: { [string]: boolean } = {}
 local LocalClanCache: string? = nil
 local LastSquadScan = 0
 
+local function isInvalidClanName(s: any): boolean
+    if type(s) ~= "string" then
+        return true
+    end
+    local clean = s:lower():gsub("%s+", "")
+    return clean == "" or clean == "nil" or clean == "none" or clean == "null" or clean == "false" or clean == "default"
+end
+
 local function readPlayerClan(player: Player): string?
     local rsPlayer = Delta.GetRSPlayer(player)
     local journey = rsPlayer and rsPlayer:FindFirstChild("Status") and rsPlayer.Status:FindFirstChild("Journey")
@@ -703,7 +711,7 @@ local function readPlayerClan(player: Player): string?
         return nil
     end
     local cur = clanFolder:GetAttribute("CurrentClan")
-    if type(cur) == "string" and cur ~= "" then
+    if not isInvalidClanName(cur) then
         return cur
     end
     return nil
@@ -727,15 +735,27 @@ local function refreshSquadCache()
 
     local myTeamName = LocalPlayer.Name .. "'s team"
     for _, clan in ipairs(ClansFolder:GetChildren()) do
-        if clan.Name == myTeamName or clan:FindFirstChild(LocalPlayer.Name) then
+        local isMyClan = (clan.Name == myTeamName)
+            or (clan:GetAttribute("Owner") == LocalPlayer.Name)
+            or (LocalClanCache ~= nil and clan.Name == LocalClanCache)
+            or (clan:FindFirstChild(LocalPlayer.Name) ~= nil)
+        if isMyClan then
             local ownerAttr = clan:GetAttribute("Owner")
             local ownerName = (type(ownerAttr) == "string" and ownerAttr) or clan.Name:match("^(.+)'s team$")
             if ownerName and ownerName ~= LocalPlayer.Name then
-                SquadMemberCache[ownerName] = true
+                local ownerPlr = Players:FindFirstChild(ownerName) :: Player?
+                local ownerClan = ownerPlr and readPlayerClan(ownerPlr)
+                if not ownerClan or ownerClan == clan.Name or ownerClan == LocalClanCache then
+                    SquadMemberCache[ownerName] = true
+                end
             end
             for _, member in ipairs(clan:GetChildren()) do
                 if member.Name ~= LocalPlayer.Name then
-                    SquadMemberCache[member.Name] = true
+                    local memPlr = Players:FindFirstChild(member.Name) :: Player?
+                    local memClan = memPlr and readPlayerClan(memPlr)
+                    if not memClan or memClan == clan.Name or memClan == LocalClanCache then
+                        SquadMemberCache[member.Name] = true
+                    end
                 end
             end
         end
@@ -1612,7 +1632,7 @@ function Targeting.ToggleNearestFriend(): (Player?, boolean)
         return nil, false
     end
     local aim2D = Targeting.GetAimOrigin2D()
-    local maxPx = math.max(Targeting.GetEffectiveFOVRadius("Silent"), Targeting.GetEffectiveFOVRadius("Aimbot"), 220)
+    local maxPx = math.clamp(Targeting.GetEffectiveFOVRadius("Silent"), 80, 140)
     local bestPlayer: Player? = nil
     local bestDist = maxPx
 

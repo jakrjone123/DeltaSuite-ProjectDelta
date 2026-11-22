@@ -369,15 +369,103 @@ local function createDefaultConfig()
             Enabled = true,
             Color = Color3.fromRGB(52, 211, 153),
             MaxDistance = 2500,
+            ShowTimer = true,
+            Tracers = false,
         },
         World = {
             Fullbright = false,
-            Brightness = 2.0,
-            ClockTime = 13.0,
+            Brightness = 2.6,
+            ClockTime = 14.0,
             NoFog = false,
             NoBlurDOF = false,
             CustomFOV = false,
             FOVValue = 90,
+
+            TerrainColorEnabled = false,
+            TerrainPreset = "Default", -- Default | Cyber | Arctic | Mars | Custom
+            TerrainGrassColor = Color3.fromRGB(68, 128, 72),
+            TerrainGroundColor = Color3.fromRGB(82, 74, 62),
+            TerrainRockColor = Color3.fromRGB(95, 98, 105),
+
+            LeavesEnabled = false,
+            LeavesColor = Color3.fromRGB(56, 189, 248),
+            LeavesHide = false,
+            LeavesTransparency = 0,
+
+            TrunksEnabled = false,
+            TrunksColor = Color3.fromRGB(72, 58, 48),
+            TrunksHide = false,
+            TrunksTransparency = 0,
+
+            WaterColorEnabled = false,
+            WaterColor = Color3.fromRGB(14, 92, 112),
+
+            NoGrass = false,
+            NoMines = false,
+
+            RenderPlayers = false,
+            BossChecker = false,
+            BossNotify = true,
+            BossShowHUD = true,
+            BossAlertEvents = true,
+
+            Radar = false,
+            RadarSize = 156,
+            RadarRange = 320,
+            RadarRotate = true,
+            RadarPlayers = true,
+            RadarNPC = true,
+            RadarCorpses = false,
+            RadarExits = true,
+            RadarX = 24,
+            RadarY = 180,
+
+            LightEnabled = false,
+            AmbientColor = Color3.fromRGB(130, 135, 145),
+            OutdoorAmbientColor = Color3.fromRGB(155, 160, 170),
+            Exposure = 0.0,
+
+            TimeSunEnabled = false,
+            Latitude = 41.0,
+
+            ShadowsEnabled = false,
+            DisableShadows = true,
+            ShadowSoftness = 0.25,
+            DiffuseScale = 1.0,
+
+            RenderingEnabled = false,
+            ExposureBias = 0.0,
+
+            FogEnabled = false,
+            FogStart = 0,
+            FogEnd = 100000,
+            FogColor = Color3.fromRGB(160, 175, 195),
+
+            AtmosphereEnabled = false,
+            AtmoDensity = 0.2,
+            AtmoHaze = 0.5,
+            AtmoGlare = 0.0,
+            AtmoOffset = 0.0,
+            AtmoColor = Color3.fromRGB(175, 195, 220),
+
+            SkyEnabled = false,
+            SkyPreset = "Night Space",
+            SkyStars = 3500,
+            SkyCelestial = true,
+
+            CloudsEnabled = false,
+            CloudsCover = 0.55,
+            CloudsDensity = 0.65,
+            CloudsColor = Color3.fromRGB(220, 230, 245),
+
+            BloomEnabled = false,
+            DisableBloom = true,
+            BloomIntensity = 0.6,
+            BloomSize = 24,
+            BloomThreshold = 1.2,
+
+            BlurEnabled = false,
+            BlurSize = 0,
         },
         Misc = {
             FastTrade = false,
@@ -2280,119 +2368,778 @@ end
 -- ============================================================================
 -- 7. WORLD & LIGHTING ENGINE (WITH CLEAN BACKUP/RESTORE)
 -- ============================================================================
-local World = {}
+local World: { [string]: any } = {}
 
-local LightingBackup = {
-    Brightness = Lighting.Brightness,
-    ClockTime = Lighting.ClockTime,
-    FogEnd = Lighting.FogEnd,
-    GlobalShadows = Lighting.GlobalShadows,
-    Ambient = Lighting.Ambient,
-    OutdoorAmbient = Lighting.OutdoorAmbient,
-}
+;(function()
+    local terrain: Terrain? = Workspace:FindFirstChildOfClass("Terrain")
+    local hasHiddenProp = type(gethiddenproperty) == "function" and type(sethiddenproperty) == "function"
 
-local AtmosphereInst: Atmosphere? = Lighting:FindFirstChildOfClass("Atmosphere")
-local AtmosphereBackup = AtmosphereInst and {
-    Density = AtmosphereInst.Density,
-    Haze = AtmosphereInst.Haze,
-    Glare = AtmosphereInst.Glare,
-    Offset = AtmosphereInst.Offset,
-} or nil
+    local LightingBackup = {
+        Brightness = Lighting.Brightness,
+        ClockTime = Lighting.ClockTime,
+        FogEnd = Lighting.FogEnd,
+        FogStart = Lighting.FogStart,
+        FogColor = Lighting.FogColor,
+        GlobalShadows = Lighting.GlobalShadows,
+        Ambient = Lighting.Ambient,
+        OutdoorAmbient = Lighting.OutdoorAmbient,
+        ExposureCompensation = Lighting.ExposureCompensation,
+        GeographicLatitude = Lighting.GeographicLatitude,
+        ShadowSoftness = Lighting.ShadowSoftness,
+        EnvironmentDiffuseScale = Lighting.EnvironmentDiffuseScale,
+        EnvironmentSpecularScale = Lighting.EnvironmentSpecularScale,
+    }
 
-local BLUR_EFFECT_NAMES = { "ADS_DOF", "DDOF", "DepthOfFieldInteraction", "WaterBlur", "InventoryBlur", "HurtEffect", "LowHealthEffect" }
-local EffectEnabledBackup: { [PostEffect]: boolean } = {}
-for _, name in ipairs(BLUR_EFFECT_NAMES) do
-    local eff = Lighting:FindFirstChild(name)
-    if eff and eff:IsA("PostEffect") then
-        EffectEnabledBackup[eff] = eff.Enabled
+    local AtmosphereInst: Atmosphere? = Lighting:FindFirstChildOfClass("Atmosphere")
+    local AtmosphereBackup = AtmosphereInst and {
+        Density = AtmosphereInst.Density,
+        Haze = AtmosphereInst.Haze,
+        Glare = AtmosphereInst.Glare,
+        Offset = AtmosphereInst.Offset,
+        Color = AtmosphereInst.Color,
+    } or nil
+
+    local BloomInst: BloomEffect? = Lighting:FindFirstChildOfClass("BloomEffect")
+    local BloomBackup = BloomInst and {
+        Enabled = BloomInst.Enabled,
+        Intensity = BloomInst.Intensity,
+        Size = BloomInst.Size,
+        Threshold = BloomInst.Threshold,
+    } or nil
+
+    local OrigSky: Sky? = Lighting:FindFirstChildOfClass("Sky")
+    local OrigSkyFaces = OrigSky and {
+        Bk = OrigSky.SkyboxBk,
+        Dn = OrigSky.SkyboxDn,
+        Ft = OrigSky.SkyboxFt,
+        Lf = OrigSky.SkyboxLf,
+        Rt = OrigSky.SkyboxRt,
+        Up = OrigSky.SkyboxUp,
+        StarCount = OrigSky.StarCount,
+        Celestial = OrigSky.CelestialBodiesShown,
+    } or nil
+
+    local OrigClouds: Clouds? = terrain and terrain:FindFirstChildOfClass("Clouds") or nil
+    local CloudsBackup = OrigClouds and {
+        Enabled = OrigClouds.Enabled,
+        Cover = OrigClouds.Cover,
+        Density = OrigClouds.Density,
+        Color = OrigClouds.Color,
+    } or nil
+    local CustomClouds: Clouds? = nil
+
+    local TERRAIN_MATS = {
+        Enum.Material.Grass,
+        Enum.Material.LeafyGrass,
+        Enum.Material.Ground,
+        Enum.Material.Mud,
+        Enum.Material.Rock,
+        Enum.Material.Sand,
+        Enum.Material.Snow,
+        Enum.Material.Slate,
+    }
+    local TerrainMatBackup: { [Enum.Material]: Color3 } = {}
+    if terrain then
+        for _, mat in ipairs(TERRAIN_MATS) do
+            local ok, col = pcall(function() return terrain:GetMaterialColor(mat) end)
+            if ok and typeof(col) == "Color3" then
+                TerrainMatBackup[mat] = col
+            end
+        end
     end
-end
-local FullbrightEffect = Lighting:FindFirstChild("Fullbright")
-local FullbrightBackupEnabled = (FullbrightEffect and FullbrightEffect:IsA("ColorCorrectionEffect")) and FullbrightEffect.Enabled or false
-
-local OriginalFOV = Workspace.CurrentCamera and Workspace.CurrentCamera.FieldOfView or 70
-local AppliedFullbright = false
-local AppliedNoFog = false
-local AppliedNoBlur = false
-local AppliedFOV = false
-
-function World.Step(suspend: boolean?)
-    local paused = (suspend == true)
-    if not paused and Config.World.Fullbright then
-        AppliedFullbright = true
-        Lighting.Brightness = Config.World.Brightness
-        Lighting.ClockTime = Config.World.ClockTime
-        Lighting.GlobalShadows = false
-        Lighting.Ambient = Color3.fromRGB(140, 140, 140)
-        Lighting.OutdoorAmbient = Color3.fromRGB(165, 165, 165)
-        if FullbrightEffect and FullbrightEffect:IsA("ColorCorrectionEffect") then
-            FullbrightEffect.Enabled = false
-        end
-    elseif AppliedFullbright then
-        AppliedFullbright = false
-        Lighting.Brightness = LightingBackup.Brightness
-        Lighting.ClockTime = LightingBackup.ClockTime
-        Lighting.GlobalShadows = LightingBackup.GlobalShadows
-        Lighting.Ambient = LightingBackup.Ambient
-        Lighting.OutdoorAmbient = LightingBackup.OutdoorAmbient
-        if FullbrightEffect and FullbrightEffect:IsA("ColorCorrectionEffect") then
-            FullbrightEffect.Enabled = FullbrightBackupEnabled
+    local OrigWaterColor = terrain and terrain.WaterColor or Color3.fromRGB(12, 84, 92)
+    local OrigDecoration = true
+    if terrain and hasHiddenProp then
+        local okD, dec = pcall(gethiddenproperty, terrain, "Decoration")
+        if okD and type(dec) == "boolean" then
+            OrigDecoration = dec
         end
     end
 
-    if not paused and Config.World.NoFog then
-        AppliedNoFog = true
-        Lighting.FogEnd = 1000000
-        if AtmosphereInst then
-            AtmosphereInst.Density = 0
-            AtmosphereInst.Haze = 0
-            AtmosphereInst.Glare = 0
+    local BLUR_EFFECT_NAMES = { "ADS_DOF", "DDOF", "DepthOfFieldInteraction", "WaterBlur", "InventoryBlur", "HurtEffect", "LowHealthEffect" }
+    local EffectBackup: { [PostEffect]: { Enabled: boolean, Size: number? } } = {}
+    for _, eff in ipairs(Lighting:GetChildren()) do
+        if eff:IsA("PostEffect") then
+            local isBlurName = table.find(BLUR_EFFECT_NAMES, eff.Name) ~= nil
+            if isBlurName or eff:IsA("BlurEffect") or eff:IsA("DepthOfFieldEffect") then
+                local sz: number? = nil
+                if eff:IsA("BlurEffect") then
+                    sz = eff.Size
+                end
+                EffectBackup[eff] = { Enabled = eff.Enabled, Size = sz }
+            end
         end
-    elseif AppliedNoFog then
-        AppliedNoFog = false
-        Lighting.FogEnd = LightingBackup.FogEnd
+    end
+    local FullbrightEffect = Lighting:FindFirstChild("Fullbright")
+    local FullbrightBackupEnabled = (FullbrightEffect and FullbrightEffect:IsA("ColorCorrectionEffect")) and FullbrightEffect.Enabled or false
+    local OriginalFOV = Workspace.CurrentCamera and Workspace.CurrentCamera.FieldOfView or 70
+
+    -- State flags to avoid redundant per-frame engine writes
+    local AppliedLight, AppliedTime, AppliedShadows, AppliedRender = false, false, false, false
+    local AppliedFog, AppliedAtmo, AppliedSky, AppliedClouds = false, false, false, false
+    local AppliedBloom, AppliedBlur, AppliedFOV = false, false, false
+    local AppliedWater, AppliedNoGrass, AppliedTerrainCols = false, false, false
+    local LastNoGrassState: boolean? = nil
+    local LastTerrainSig = ""
+
+    -- Tree Leaves / Trunks & Landmines Async Cache + Backup Tables
+    type PartBackup = { Color: Color3, Transparency: number, CanCollide: boolean, CanTouch: boolean, SaColor: Color3?, SaInst: SurfaceAppearance? }
+    local LeafParts: { [BasePart]: PartBackup } = {}
+    local TrunkParts: { [BasePart]: PartBackup } = {}
+    local MineParts: { [BasePart]: PartBackup } = {}
+    local MinePrompts: { [ProximityPrompt]: boolean } = {}
+    local FoliageScanned, MinesScanned = false, false
+    local FoliageScanning, MinesScanning = false, false
+    local LastLeavesSig, LastTrunksSig, LastMinesApplied = "", "", false
+
+    local function capturePartBackup(p: BasePart): PartBackup
+        local sa = p:FindFirstChildOfClass("SurfaceAppearance")
+        return {
+            Color = p.Color,
+            Transparency = p.Transparency,
+            CanCollide = p.CanCollide,
+            CanTouch = p.CanTouch,
+            SaColor = sa and sa.Color or nil,
+            SaInst = sa,
+        }
+    end
+
+    local function isUnderDynamicActor(inst: Instance): boolean
+        local cur: Instance? = inst
+        while cur and cur ~= Workspace do
+            local n = cur.Name
+            if n == "Players" or n == "Containers" or n == "DroppedItems" or n == "QuestItems" or n == "Loot" or n == "Vehicles" then
+                return true
+            end
+            if cur:IsA("Model") and cur:FindFirstChildOfClass("Humanoid") then
+                return true
+            end
+            cur = cur.Parent
+        end
+        return false
+    end
+
+    local function hasTreeAncestor(inst: Instance): boolean
+        local cur: Instance? = inst.Parent
+        for _ = 1, 5 do
+            if not cur or cur == Workspace then break end
+            local ln = cur.Name:lower()
+            if ln:find("tree") or ln:find("pine") or ln:find("foliage") or ln:find("bush") or ln:find("birch") or ln:find("spruce") then
+                return true
+            end
+            cur = cur.Parent
+        end
+        return false
+    end
+
+    local function classifyWorldPart(d: Instance, checkFoliage: boolean, checkMines: boolean)
+        if not d:IsA("BasePart") or isUnderDynamicActor(d) then
+            return
+        end
+        local ln = d.Name:lower()
+        local parentLn = d.Parent and d.Parent.Name:lower() or ""
+
+        if checkMines then
+            local mineAncestor = ln:find("pmn2") or ln:find("mon50") or ln:find("claymore") or ln:find("tripwire")
+                or (ln:find("mine") and not ln:find("miner") and not ln:find("mineral"))
+                or parentLn:find("pmn2") or parentLn:find("mon50") or parentLn:find("claymore") or parentLn:find("landmine")
+            if mineAncestor and not MineParts[d] then
+                MineParts[d] = capturePartBackup(d)
+                local pr = d:FindFirstChildWhichIsA("ProximityPrompt")
+                if pr and MinePrompts[pr] == nil then
+                    MinePrompts[pr] = pr.Enabled
+                end
+            end
+        end
+
+        if checkFoliage then
+            local isLeaf = ln == "leaf" or ln == "leaves" or ln:find("leaf") ~= nil or ln:find("leaves") ~= nil
+                or ln:find("canopy") ~= nil or (hasTreeAncestor(d) and (d.Material == Enum.Material.Grass or ln:find("bush") ~= nil or ln:find("foliage") ~= nil))
+            if isLeaf and not LeafParts[d] then
+                LeafParts[d] = capturePartBackup(d)
+                return
+            end
+            local isTrunk = ln == "trunk" or ln:find("trunk") ~= nil or ln:find("bark") ~= nil
+                or (hasTreeAncestor(d) and (d.Material == Enum.Material.Wood or d.Material == Enum.Material.WoodPlanks or ln:find("log") ~= nil))
+            if isTrunk and not TrunkParts[d] then
+                TrunkParts[d] = capturePartBackup(d)
+            end
+        end
+    end
+
+    local function ensureAsyncScan(wantFoliage: boolean, wantMines: boolean)
+        if wantFoliage and not FoliageScanned and not FoliageScanning then
+            FoliageScanning = true
+            task.spawn(function()
+                local list = Workspace:GetDescendants()
+                for i, d in ipairs(list) do
+                    if not Session.IsAlive() then break end
+                    classifyWorldPart(d, true, Config.World.NoMines)
+                    if i % 2500 == 0 then task.wait() end
+                end
+                FoliageScanned = true
+                FoliageScanning = false
+                LastLeavesSig = ""
+                LastTrunksSig = ""
+            end)
+        end
+        if wantMines and not MinesScanned and not MinesScanning then
+            MinesScanning = true
+            task.spawn(function()
+                local list = Workspace:GetDescendants()
+                for i, d in ipairs(list) do
+                    if not Session.IsAlive() then break end
+                    classifyWorldPart(d, Config.World.LeavesEnabled or Config.World.TrunksEnabled, true)
+                    if i % 2500 == 0 then task.wait() end
+                end
+                MinesScanned = true
+                MinesScanning = false
+                LastMinesApplied = false
+            end)
+        end
+    end
+
+    Session.Bind(Workspace.DescendantAdded, function(d)
+        if FoliageScanned or MinesScanned then
+            classifyWorldPart(d, FoliageScanned, MinesScanned)
+            LastLeavesSig = ""
+            LastTrunksSig = ""
+        end
+    end)
+
+    local function applyTreeGroup(pool: { [BasePart]: PartBackup }, enabled: boolean, hide: boolean, transPct: number, col: Color3)
+        local alpha = hide and 1 or math.clamp((transPct or 0) / 100, 0, 1)
+        for p, bk in pairs(pool) do
+            if not p.Parent then
+                pool[p] = nil
+            else
+                if enabled then
+                    p.Color = col
+                    if bk.SaInst and bk.SaInst.Parent then
+                        pcall(function() (bk.SaInst :: any).Color = col end)
+                    end
+                    p.Transparency = alpha
+                    if hide then
+                        p.CanCollide = false
+                    end
+                else
+                    p.Color = bk.Color
+                    p.Transparency = bk.Transparency
+                    p.CanCollide = bk.CanCollide
+                    if bk.SaInst and bk.SaInst.Parent and bk.SaColor then
+                        pcall(function() (bk.SaInst :: any).Color = bk.SaColor end)
+                    end
+                end
+            end
+        end
+    end
+
+    local function applyMinesState(disableMines: boolean)
+        for p, bk in pairs(MineParts) do
+            if not p.Parent then
+                MineParts[p] = nil
+            else
+                if disableMines then
+                    p.CanTouch = false
+                    p.CanCollide = false
+                    p.Transparency = math.max(bk.Transparency, 0.55)
+                else
+                    p.CanTouch = bk.CanTouch
+                    p.CanCollide = bk.CanCollide
+                    p.Transparency = bk.Transparency
+                end
+            end
+        end
+        for pr, origEn in pairs(MinePrompts) do
+            if not pr.Parent then
+                MinePrompts[pr] = nil
+            elseif disableMines then
+                pr.Enabled = false
+            else
+                pr.Enabled = origEn
+            end
+        end
+    end
+
+    -- Boss & World Event Checker State
+    local KnownBossNames = { "whisper", "dozer", "death", "anton", "boss", "shturman", "scavboss" }
+    local KnownEventNames = { "cargoplane", "mi24", "btr80", "heli", "airdrop", "supplydrop" }
+    local ActiveBossCache: { [Instance]: boolean } = {}
+    local LastBossCheck = 0
+    local LastRenderPlrCheck = 0
+    local LastBossHudText = ""
+
+    local function isBossOrEvent(inst: Instance, checkEvents: boolean): (boolean, string?)
+        local ln = inst.Name:lower()
+        for _, b in ipairs(KnownBossNames) do
+            if ln:find(b) then
+                return true, inst.Name
+            end
+        end
+        if inst:GetAttribute("IsBoss") == true or inst:GetAttribute("Boss") == true then
+            return true, inst.Name
+        end
+        if checkEvents then
+            for _, ev in ipairs(KnownEventNames) do
+                if ln:find(ev) then
+                    return true, inst.Name
+                end
+            end
+        end
+        return false, nil
+    end
+
+    function World.Step(suspend: boolean?)
+        local paused = (suspend == true)
+        local w = Config.World
+        local now = os.clock()
+
+        -- 1. Light & Fullbright
+        local useLight = not paused and (w.LightEnabled or w.Fullbright)
+        if useLight then
+            AppliedLight = true
+            Lighting.Brightness = w.Brightness
+            Lighting.Ambient = w.LightEnabled and w.AmbientColor or Color3.fromRGB(140, 140, 140)
+            Lighting.OutdoorAmbient = w.LightEnabled and w.OutdoorAmbientColor or Color3.fromRGB(165, 165, 165)
+            if w.LightEnabled then
+                Lighting.ExposureCompensation = w.Exposure
+            end
+            if FullbrightEffect and FullbrightEffect:IsA("ColorCorrectionEffect") then
+                FullbrightEffect.Enabled = false
+            end
+        elseif AppliedLight then
+            AppliedLight = false
+            Lighting.Brightness = LightingBackup.Brightness
+            Lighting.Ambient = LightingBackup.Ambient
+            Lighting.OutdoorAmbient = LightingBackup.OutdoorAmbient
+            if not w.RenderingEnabled then
+                Lighting.ExposureCompensation = LightingBackup.ExposureCompensation
+            end
+            if FullbrightEffect and FullbrightEffect:IsA("ColorCorrectionEffect") then
+                FullbrightEffect.Enabled = FullbrightBackupEnabled
+            end
+        end
+
+        -- 2. Time & Sun
+        local useTime = not paused and (w.TimeSunEnabled or w.Fullbright)
+        if useTime then
+            AppliedTime = true
+            Lighting.ClockTime = w.ClockTime
+            if w.TimeSunEnabled then
+                Lighting.GeographicLatitude = w.Latitude
+            end
+        elseif AppliedTime then
+            AppliedTime = false
+            Lighting.ClockTime = LightingBackup.ClockTime
+            Lighting.GeographicLatitude = LightingBackup.GeographicLatitude
+        end
+
+        -- 3. Shadows
+        local useShadows = not paused and (w.ShadowsEnabled or w.Fullbright)
+        if useShadows then
+            AppliedShadows = true
+            Lighting.GlobalShadows = w.ShadowsEnabled and (not w.DisableShadows) or false
+            if w.ShadowsEnabled then
+                Lighting.ShadowSoftness = w.ShadowSoftness
+                Lighting.EnvironmentDiffuseScale = w.DiffuseScale
+            end
+        elseif AppliedShadows then
+            AppliedShadows = false
+            Lighting.GlobalShadows = LightingBackup.GlobalShadows
+            Lighting.ShadowSoftness = LightingBackup.ShadowSoftness
+            Lighting.EnvironmentDiffuseScale = LightingBackup.EnvironmentDiffuseScale
+        end
+
+        -- 4. Rendering & FOV
+        local useRender = not paused and w.RenderingEnabled
+        if useRender then
+            AppliedRender = true
+            if not w.LightEnabled then
+                Lighting.ExposureCompensation = w.ExposureBias
+            end
+            Lighting.EnvironmentSpecularScale = 0
+        elseif AppliedRender then
+            AppliedRender = false
+            if not w.LightEnabled then
+                Lighting.ExposureCompensation = LightingBackup.ExposureCompensation
+            end
+            Lighting.EnvironmentSpecularScale = LightingBackup.EnvironmentSpecularScale
+        end
+
+        local cam = Workspace.CurrentCamera
+        if cam then
+            if not paused and w.CustomFOV then
+                AppliedFOV = true
+                cam.FieldOfView = w.FOVValue
+            elseif AppliedFOV then
+                AppliedFOV = false
+                cam.FieldOfView = OriginalFOV
+            end
+        end
+
+        -- 5. Fog
+        local useFog = not paused and (w.FogEnabled or w.NoFog)
+        if useFog then
+            AppliedFog = true
+            if w.NoFog and not w.FogEnabled then
+                Lighting.FogEnd = 1000000
+                Lighting.FogStart = 0
+            else
+                Lighting.FogStart = w.FogStart
+                Lighting.FogEnd = w.FogEnd
+                Lighting.FogColor = w.FogColor
+            end
+        elseif AppliedFog then
+            AppliedFog = false
+            Lighting.FogStart = LightingBackup.FogStart
+            Lighting.FogEnd = LightingBackup.FogEnd
+            Lighting.FogColor = LightingBackup.FogColor
+        end
+
+        -- 6. Atmosphere
         if AtmosphereInst and AtmosphereBackup then
-            AtmosphereInst.Density = AtmosphereBackup.Density
-            AtmosphereInst.Haze = AtmosphereBackup.Haze
-            AtmosphereInst.Glare = AtmosphereBackup.Glare
-        end
-    end
-
-    if not paused and Config.World.NoBlurDOF then
-        AppliedNoBlur = true
-        for eff in pairs(EffectEnabledBackup) do
-            if eff.Parent then
-                eff.Enabled = false
+            if not paused and w.AtmosphereEnabled then
+                AppliedAtmo = true
+                AtmosphereInst.Density = w.AtmoDensity
+                AtmosphereInst.Haze = w.AtmoHaze
+                AtmosphereInst.Glare = w.AtmoGlare
+                AtmosphereInst.Offset = w.AtmoOffset
+                AtmosphereInst.Color = w.AtmoColor
+            elseif not paused and w.NoFog then
+                AppliedAtmo = true
+                AtmosphereInst.Density = 0
+                AtmosphereInst.Haze = 0
+                AtmosphereInst.Glare = 0
+            elseif AppliedAtmo then
+                AppliedAtmo = false
+                AtmosphereInst.Density = AtmosphereBackup.Density
+                AtmosphereInst.Haze = AtmosphereBackup.Haze
+                AtmosphereInst.Glare = AtmosphereBackup.Glare
+                AtmosphereInst.Offset = AtmosphereBackup.Offset
+                AtmosphereInst.Color = AtmosphereBackup.Color
             end
         end
-    elseif AppliedNoBlur then
-        AppliedNoBlur = false
-        for eff, orig in pairs(EffectEnabledBackup) do
-            if eff.Parent then
-                eff.Enabled = orig
+
+        -- 7. Sky
+        if OrigSky and OrigSkyFaces then
+            if not paused and w.SkyEnabled then
+                AppliedSky = true
+                OrigSky.StarCount = w.SkyStars
+                OrigSky.CelestialBodiesShown = w.SkyCelestial
+                if w.SkyPreset == "Night Space" then
+                    OrigSky.SkyboxBk = ""
+                    OrigSky.SkyboxDn = ""
+                    OrigSky.SkyboxFt = ""
+                    OrigSky.SkyboxLf = ""
+                    OrigSky.SkyboxRt = ""
+                    OrigSky.SkyboxUp = ""
+                else
+                    OrigSky.SkyboxBk = OrigSkyFaces.Bk
+                    OrigSky.SkyboxDn = OrigSkyFaces.Dn
+                    OrigSky.SkyboxFt = OrigSkyFaces.Ft
+                    OrigSky.SkyboxLf = OrigSkyFaces.Lf
+                    OrigSky.SkyboxRt = OrigSkyFaces.Rt
+                    OrigSky.SkyboxUp = OrigSkyFaces.Up
+                end
+            elseif AppliedSky then
+                AppliedSky = false
+                OrigSky.SkyboxBk = OrigSkyFaces.Bk
+                OrigSky.SkyboxDn = OrigSkyFaces.Dn
+                OrigSky.SkyboxFt = OrigSkyFaces.Ft
+                OrigSky.SkyboxLf = OrigSkyFaces.Lf
+                OrigSky.SkyboxRt = OrigSkyFaces.Rt
+                OrigSky.SkyboxUp = OrigSkyFaces.Up
+                OrigSky.StarCount = OrigSkyFaces.StarCount
+                OrigSky.CelestialBodiesShown = OrigSkyFaces.Celestial
             end
         end
-    end
 
-    local cam = Workspace.CurrentCamera
-    if cam then
-        if not paused and Config.World.CustomFOV then
-            AppliedFOV = true
-            cam.FieldOfView = Config.World.FOVValue
-        elseif AppliedFOV then
-            AppliedFOV = false
-            cam.FieldOfView = OriginalFOV
+        -- 8. Clouds
+        if terrain then
+            if not paused and w.CloudsEnabled then
+                AppliedClouds = true
+                local targetClouds = OrigClouds or CustomClouds
+                if not targetClouds or not targetClouds.Parent then
+                    local nc = Instance.new("Clouds")
+                    nc.Name = "__DeltaClouds"
+                    nc.Parent = terrain
+                    Session.Track(nc)
+                    CustomClouds = nc
+                    targetClouds = nc
+                end
+                if targetClouds then
+                    targetClouds.Enabled = true
+                    targetClouds.Cover = w.CloudsCover
+                    targetClouds.Density = w.CloudsDensity
+                    targetClouds.Color = w.CloudsColor
+                end
+            elseif AppliedClouds then
+                AppliedClouds = false
+                if OrigClouds and CloudsBackup and OrigClouds.Parent then
+                    OrigClouds.Enabled = CloudsBackup.Enabled
+                    OrigClouds.Cover = CloudsBackup.Cover
+                    OrigClouds.Density = CloudsBackup.Density
+                    OrigClouds.Color = CloudsBackup.Color
+                elseif CustomClouds then
+                    pcall(function() CustomClouds:Destroy() end)
+                    CustomClouds = nil
+                end
+            end
+        end
+
+        -- 9. Bloom
+        if BloomInst and BloomBackup then
+            if not paused and w.BloomEnabled then
+                AppliedBloom = true
+                BloomInst.Enabled = not w.DisableBloom
+                BloomInst.Intensity = w.BloomIntensity
+                BloomInst.Size = w.BloomSize
+                BloomInst.Threshold = w.BloomThreshold
+            elseif AppliedBloom then
+                AppliedBloom = false
+                BloomInst.Enabled = BloomBackup.Enabled
+                BloomInst.Intensity = BloomBackup.Intensity
+                BloomInst.Size = BloomBackup.Size
+                BloomInst.Threshold = BloomBackup.Threshold
+            end
+        end
+
+        -- 10. Blur / DOF
+        local useBlur = not paused and (w.BlurEnabled or w.NoBlurDOF)
+        if useBlur then
+            AppliedBlur = true
+            local removeAll = w.NoBlurDOF or (w.BlurEnabled and w.BlurSize <= 0.1)
+            for eff, bk in pairs(EffectBackup) do
+                if eff.Parent then
+                    if removeAll then
+                        eff.Enabled = false
+                    elseif eff:IsA("BlurEffect") and bk.Size ~= nil then
+                        eff.Enabled = true
+                        eff.Size = w.BlurSize
+                    else
+                        eff.Enabled = false
+                    end
+                end
+            end
+        elseif AppliedBlur then
+            AppliedBlur = false
+            for eff, bk in pairs(EffectBackup) do
+                if eff.Parent then
+                    eff.Enabled = bk.Enabled
+                    if eff:IsA("BlurEffect") and bk.Size ~= nil then
+                        eff.Size = bk.Size
+                    end
+                end
+            end
+        end
+
+        -- 11. Water Color, No Grass & Terrain Material Colors
+        if terrain then
+            if not paused and w.WaterColorEnabled then
+                AppliedWater = true
+                terrain.WaterColor = w.WaterColor
+            elseif AppliedWater then
+                AppliedWater = false
+                terrain.WaterColor = OrigWaterColor
+            end
+
+            local wantNoGrass = (not paused and w.NoGrass)
+            if hasHiddenProp and LastNoGrassState ~= wantNoGrass then
+                LastNoGrassState = wantNoGrass
+                if wantNoGrass then
+                    AppliedNoGrass = true
+                    pcall(sethiddenproperty, terrain, "Decoration", false)
+                elseif AppliedNoGrass then
+                    AppliedNoGrass = false
+                    pcall(sethiddenproperty, terrain, "Decoration", OrigDecoration)
+                end
+            end
+
+            local wantTerr = (not paused and w.TerrainColorEnabled)
+            local terrSig = wantTerr and string.format("%s_%d_%d_%d", w.TerrainPreset, math.floor(w.TerrainGrassColor.R * 255), math.floor(w.TerrainGroundColor.R * 255), math.floor(w.TerrainRockColor.R * 255)) or "OFF"
+            if terrSig ~= LastTerrainSig then
+                LastTerrainSig = terrSig
+                if wantTerr then
+                    AppliedTerrainCols = true
+                    local grassC, groundC, rockC = w.TerrainGrassColor, w.TerrainGroundColor, w.TerrainRockColor
+                    if w.TerrainPreset == "Cyber" then
+                        grassC = Color3.fromRGB(30, 88, 128)
+                        groundC = Color3.fromRGB(22, 28, 42)
+                        rockC = Color3.fromRGB(45, 58, 88)
+                    elseif w.TerrainPreset == "Arctic" then
+                        grassC = Color3.fromRGB(205, 226, 242)
+                        groundC = Color3.fromRGB(165, 185, 205)
+                        rockC = Color3.fromRGB(130, 145, 165)
+                    elseif w.TerrainPreset == "Mars" then
+                        grassC = Color3.fromRGB(168, 72, 48)
+                        groundC = Color3.fromRGB(128, 56, 38)
+                        rockC = Color3.fromRGB(96, 48, 36)
+                    end
+                    pcall(function()
+                        terrain:SetMaterialColor(Enum.Material.Grass, grassC)
+                        terrain:SetMaterialColor(Enum.Material.LeafyGrass, grassC)
+                        terrain:SetMaterialColor(Enum.Material.Ground, groundC)
+                        terrain:SetMaterialColor(Enum.Material.Mud, groundC)
+                        terrain:SetMaterialColor(Enum.Material.Rock, rockC)
+                        terrain:SetMaterialColor(Enum.Material.Slate, rockC)
+                    end)
+                elseif AppliedTerrainCols then
+                    AppliedTerrainCols = false
+                    for mat, col in pairs(TerrainMatBackup) do
+                        pcall(function() terrain:SetMaterialColor(mat, col) end)
+                    end
+                end
+            end
+        end
+
+        -- 12. Leaves, Tree Trunks & No Mines (Async Scanned, Dirty-Checked)
+        local wantLeaves = not paused and (w.LeavesEnabled or w.LeavesHide)
+        local wantTrunks = not paused and (w.TrunksEnabled or w.TrunksHide)
+        local wantMines = not paused and w.NoMines
+        if wantLeaves or wantTrunks or wantMines then
+            ensureAsyncScan(wantLeaves or wantTrunks, wantMines)
+        end
+
+        if FoliageScanned then
+            local lSig = wantLeaves and string.format("1_%s_%d_%d_%d", tostring(w.LeavesHide), math.floor(w.LeavesTransparency), math.floor(w.LeavesColor.R * 255), math.floor(w.LeavesColor.G * 255)) or "OFF"
+            if lSig ~= LastLeavesSig then
+                LastLeavesSig = lSig
+                applyTreeGroup(LeafParts, wantLeaves, w.LeavesHide, w.LeavesTransparency, w.LeavesColor)
+            end
+            local tSig = wantTrunks and string.format("1_%s_%d_%d_%d", tostring(w.TrunksHide), math.floor(w.TrunksTransparency), math.floor(w.TrunksColor.R * 255), math.floor(w.TrunksColor.G * 255)) or "OFF"
+            if tSig ~= LastTrunksSig then
+                LastTrunksSig = tSig
+                applyTreeGroup(TrunkParts, wantTrunks, w.TrunksHide, w.TrunksTransparency, w.TrunksColor)
+            end
+        end
+
+        if MinesScanned and wantMines ~= LastMinesApplied then
+            LastMinesApplied = wantMines
+            applyMinesState(wantMines)
+        end
+
+        -- 13. Render Players (throttled ~5 Hz)
+        if not paused and w.RenderPlayers and (now - LastRenderPlrCheck) >= 0.2 then
+            LastRenderPlrCheck = now
+            for _, entry in pairs(Actors) do
+                if not entry.IsAI and entry.Model.Parent then
+                    for _, ch in ipairs(entry.Model:GetChildren()) do
+                        if ch:IsA("BasePart") then
+                            ch.LocalTransparencyModifier = 0
+                        end
+                    end
+                end
+            end
+        end
+
+        -- 14. Boss Checker (throttled ~1.5s)
+        local hudFrame = World._BossHudFrame :: Frame?
+        local hudLabel = World._BossHudText :: TextLabel?
+        if paused or not w.BossChecker then
+            if hudFrame then hudFrame.Visible = false end
+        elseif (now - LastBossCheck) >= 1.5 then
+            LastBossCheck = now
+            local foundList: { string } = {}
+            local seenNames: { [string]: boolean } = {}
+            for model, entry in pairs(Actors) do
+                if entry.IsAI and model.Parent then
+                    local hum = model:FindFirstChildOfClass("Humanoid")
+                    if hum and hum.Health > 0 then
+                        local hit, bName = isBossOrEvent(model, w.BossAlertEvents)
+                        if hit and bName then
+                            local zoneName = model.Parent and model.Parent.Name or "AiZones"
+                            local disp = string.format("%s (%s)", bName, zoneName)
+                            if not seenNames[disp] then
+                                seenNames[disp] = true
+                                table.insert(foundList, disp)
+                            end
+                            if w.BossNotify and not ActiveBossCache[model] then
+                                ActiveBossCache[model] = true
+                                if World._Notify then
+                                    World._Notify("Boss Detected", disp .. " is active!", "warn")
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+            if w.BossAlertEvents then
+                local we = Workspace:FindFirstChild("WorldEvents")
+                if we then
+                    for _, ev in ipairs(we:GetChildren()) do
+                        local hit, eName = isBossOrEvent(ev, true)
+                        if hit and eName then
+                            if not seenNames[eName] then
+                                seenNames[eName] = true
+                                table.insert(foundList, eName)
+                            end
+                            if w.BossNotify and not ActiveBossCache[ev] then
+                                ActiveBossCache[ev] = true
+                                if World._Notify then
+                                    World._Notify("World Event", eName .. " active on map!", "info")
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+            for inst in pairs(ActiveBossCache) do
+                if not inst.Parent then ActiveBossCache[inst] = nil end
+            end
+            if hudFrame and hudLabel then
+                hudFrame.Visible = w.BossShowHUD == true
+                local txt = (#foundList > 0) and ("BOSS: " .. table.concat(foundList, " • ")) or "BOSS CHECKER: None active"
+                if txt ~= LastBossHudText then
+                    LastBossHudText = txt
+                    hudLabel.Text = txt
+                    hudLabel.TextColor3 = (#foundList > 0) and Color3.fromRGB(251, 191, 36) or Color3.fromRGB(148, 163, 184)
+                end
+            end
+        elseif hudFrame then
+            hudFrame.Visible = w.BossShowHUD == true
         end
     end
-end
 
-function World.RestoreAll()
-    Config.World.Fullbright = false
-    Config.World.NoFog = false
-    Config.World.NoBlurDOF = false
-    Config.World.CustomFOV = false
-    World.Step(false)
-end
+    function World.RestoreAll()
+        local w = Config.World
+        w.Fullbright = false
+        w.NoFog = false
+        w.NoBlurDOF = false
+        w.CustomFOV = false
+        w.LightEnabled = false
+        w.TimeSunEnabled = false
+        w.ShadowsEnabled = false
+        w.RenderingEnabled = false
+        w.FogEnabled = false
+        w.AtmosphereEnabled = false
+        w.SkyEnabled = false
+        w.CloudsEnabled = false
+        w.BloomEnabled = false
+        w.BlurEnabled = false
+        w.WaterColorEnabled = false
+        w.NoGrass = false
+        w.TerrainColorEnabled = false
+        w.LeavesEnabled = false
+        w.LeavesHide = false
+        w.TrunksEnabled = false
+        w.TrunksHide = false
+        w.NoMines = false
+        w.RenderPlayers = false
+        w.BossChecker = false
+        w.Radar = false
+        LastLeavesSig = "RESET"
+        LastTrunksSig = "RESET"
+        if FoliageScanned then
+            applyTreeGroup(LeafParts, false, false, 0, Color3.new(1, 1, 1))
+            applyTreeGroup(TrunkParts, false, false, 0, Color3.new(1, 1, 1))
+        end
+        if MinesScanned then
+            applyMinesState(false)
+            LastMinesApplied = false
+        end
+        World.Step(false)
+    end
+end)()
 
 local Misc: { [string]: any } = {}
 
@@ -3231,7 +3978,7 @@ local function renderTagESP(tag: TagEntry, cam: Camera, vp: Vector2)
     if tag.Category == "Exit" then
         values.Name = { Text = tag.CachedLabel, Color = color, Size = math.max(fs - 1, 11) }
         values.Distance = { Text = string.format("%.0fm", dist), Color = Color3.fromRGB(226, 232, 240), Size = math.max(fs - 2, 10) }
-        if tag.CachedSub ~= "" then
+        if Config.ExitESP.ShowTimer ~= false and tag.CachedSub ~= "" then
             values.Value = { Text = tag.CachedSub, Color = Color3.fromRGB(167, 243, 208), Size = math.max(fs - 2, 10) }
         end
         renderDockedLabels(d, values, createDefaultTagLayout("Quest Items"), false, 1, bx, by, bw, bh, lineStep)
@@ -3244,7 +3991,14 @@ local function renderTagESP(tag: TagEntry, cam: Camera, vp: Vector2)
             d.Labels.Value.Position = Vector2.new(math.floor(sp.X + 0.5), math.floor(by + bh + 3 + lineStep + 0.5))
             d.Labels.Value.Visible = true
         end
-        d.Tracer.Visible = false
+        if Config.ExitESP.Tracers then
+            d.Tracer.From = Vector2.new(vp.X * 0.5, vp.Y)
+            d.Tracer.To = dotPos
+            d.Tracer.Color = color
+            d.Tracer.Visible = true
+        else
+            d.Tracer.Visible = false
+        end
         updateSkeletonVisual(d, tag.Instance, cam, color, false)
         return
     end
@@ -3298,6 +4052,201 @@ local FOVCircleOutline = newDraw("Circle", { Thickness = 3.0, NumSides = 72, Fil
 local FOVCircle = newDraw("Circle", { Thickness = 1.9, NumSides = 72, Filled = false, Transparency = drawTrans(0.95), ZIndex = 10, Visible = false })
 Combat._SilentLine = newDraw("Line", { Thickness = 1.0, Transparency = drawTrans(0.75), ZIndex = 9, Visible = false })
 Combat._SilentDot = newDraw("Circle", { Filled = true, Radius = 2.6, NumSides = 12, Transparency = drawTrans(0.95), ZIndex = 10, Visible = false })
+
+;(function()
+    local RADAR_MAX_BLIPS = 44
+    local radar: { [string]: any }? = nil
+
+    local function ensureRadar()
+        if radar or not HasDrawing then
+            return
+        end
+        local blips: { { Dot: any, Label: any } } = {}
+        for i = 1, RADAR_MAX_BLIPS do
+            blips[i] = {
+                Dot = newDraw("Circle", { Filled = true, Radius = 3.2, NumSides = 12, Transparency = drawTrans(0.95), ZIndex = 14, Visible = false }),
+                Label = newDraw("Text", { Center = true, Outline = true, Size = 11, Font = 2, Transparency = drawTrans(0.92), ZIndex = 15, Visible = false }),
+            }
+        end
+        radar = {
+            Bg = newDraw("Circle", { Filled = true, NumSides = 64, Color = Color3.fromRGB(11, 14, 20), Transparency = drawTrans(0.68), ZIndex = 11, Visible = false }),
+            InnerRing = newDraw("Circle", { Filled = false, Thickness = 1.0, NumSides = 48, Color = Color3.fromRGB(38, 47, 68), Transparency = drawTrans(0.45), ZIndex = 12, Visible = false }),
+            Border = newDraw("Circle", { Filled = false, Thickness = 1.6, NumSides = 64, Color = Color3.fromRGB(56, 189, 248), Transparency = drawTrans(0.65), ZIndex = 13, Visible = false }),
+            CrossH = newDraw("Line", { Thickness = 1.0, Color = Color3.fromRGB(48, 58, 78), Transparency = drawTrans(0.5), ZIndex = 12, Visible = false }),
+            CrossV = newDraw("Line", { Thickness = 1.0, Color = Color3.fromRGB(48, 58, 78), Transparency = drawTrans(0.5), ZIndex = 12, Visible = false }),
+            FovL = newDraw("Line", { Thickness = 1.0, Color = Color3.fromRGB(56, 189, 248), Transparency = drawTrans(0.45), ZIndex = 12, Visible = false }),
+            FovR = newDraw("Line", { Thickness = 1.0, Color = Color3.fromRGB(56, 189, 248), Transparency = drawTrans(0.45), ZIndex = 12, Visible = false }),
+            Center = newDraw("Circle", { Filled = true, Radius = 3.4, NumSides = 14, Color = Color3.fromRGB(255, 255, 255), Transparency = drawTrans(1.0), ZIndex = 16, Visible = false }),
+            North = newDraw("Text", { Text = "N", Center = true, Outline = true, Size = 12, Font = 2, Color = Color3.fromRGB(56, 189, 248), Transparency = drawTrans(0.95), ZIndex = 15, Visible = false }),
+            Blips = blips,
+        }
+    end
+
+    function World.HideRadar()
+        if not radar then return end
+        for k, obj in pairs(radar) do
+            if k == "Blips" then
+                for _, b in ipairs(obj) do
+                    if b.Dot then b.Dot.Visible = false end
+                    if b.Label then b.Label.Visible = false end
+                end
+            elseif obj then
+                obj.Visible = false
+            end
+        end
+    end
+
+    function World.DestroyRadar()
+        if not radar then return end
+        for k, obj in pairs(radar) do
+            if k == "Blips" then
+                for _, b in ipairs(obj) do
+                    if b.Dot then pcall(function() b.Dot:Remove() end) end
+                    if b.Label then pcall(function() b.Label:Remove() end) end
+                end
+            elseif obj then
+                pcall(function() obj:Remove() end)
+            end
+        end
+        radar = nil
+    end
+
+    function World.RenderRadar(cam: Camera, vp: Vector2)
+        if not Config.World.Radar then
+            World.HideRadar()
+            return
+        end
+        ensureRadar()
+        if not radar then return end
+
+        local size = math.clamp(Config.World.RadarSize or 156, 100, 260)
+        local rad = size * 0.5
+        local cx = math.clamp((Config.World.RadarX or 24) + rad, rad + 6, math.max(rad + 6, vp.X - rad - 6))
+        local cy = math.clamp((Config.World.RadarY or 180) + rad, rad + 6, math.max(rad + 6, vp.Y - rad - 6))
+        local center = Vector2.new(cx, cy)
+
+        radar.Bg.Position = center
+        radar.Bg.Radius = rad
+        radar.Bg.Visible = true
+        radar.InnerRing.Position = center
+        radar.InnerRing.Radius = rad * 0.5
+        radar.InnerRing.Visible = true
+        radar.Border.Position = center
+        radar.Border.Radius = rad
+        radar.Border.Visible = true
+
+        radar.CrossH.From = Vector2.new(cx - rad + 4, cy)
+        radar.CrossH.To = Vector2.new(cx + rad - 4, cy)
+        radar.CrossH.Visible = true
+        radar.CrossV.From = Vector2.new(cx, cy - rad + 4)
+        radar.CrossV.To = Vector2.new(cx, cy + rad - 4)
+        radar.CrossV.Visible = true
+
+        local look = cam.CFrame.LookVector
+        local yaw = math.atan2(look.X, look.Z)
+        local halfFov = math.rad(math.clamp(cam.FieldOfView * 0.5, 18, 60))
+        local rot = Config.World.RadarRotate
+        local coneLen = rad * 0.85
+
+        if rot then
+            radar.FovL.From = center
+            radar.FovL.To = center + Vector2.new(-math.sin(halfFov) * coneLen, -math.cos(halfFov) * coneLen)
+            radar.FovR.From = center
+            radar.FovR.To = center + Vector2.new(math.sin(halfFov) * coneLen, -math.cos(halfFov) * coneLen)
+            local northAngle = -yaw + math.pi
+            radar.North.Position = center + Vector2.new(math.sin(northAngle) * (rad - 11), -math.cos(northAngle) * (rad - 11)) - Vector2.new(0, 6)
+        else
+            local fwd = Vector2.new(look.X, look.Z)
+            if fwd.Magnitude < 0.01 then fwd = Vector2.new(0, -1) end
+            fwd = fwd.Unit
+            local c1 = Vector2.new(fwd.X * math.cos(-halfFov) - fwd.Y * math.sin(-halfFov), fwd.X * math.sin(-halfFov) + fwd.Y * math.cos(-halfFov))
+            local c2 = Vector2.new(fwd.X * math.cos(halfFov) - fwd.Y * math.sin(halfFov), fwd.X * math.sin(halfFov) + fwd.Y * math.cos(halfFov))
+            radar.FovL.From = center
+            radar.FovL.To = center + c1 * coneLen
+            radar.FovR.From = center
+            radar.FovR.To = center + c2 * coneLen
+            radar.North.Position = Vector2.new(cx, cy - rad + 4)
+        end
+        radar.FovL.Visible = true
+        radar.FovR.Visible = true
+        radar.North.Visible = true
+        radar.Center.Position = center
+        radar.Center.Visible = true
+
+        local refPos = (LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") :: BasePart? and (LocalPlayer.Character :: any).HumanoidRootPart.Position) or cam.CFrame.Position
+        local maxRange = math.max(Config.World.RadarRange or 320, 60)
+        local cosY, sinY = math.cos(-yaw + math.pi), math.sin(-yaw + math.pi)
+        local blipIdx = 0
+
+        local function pushBlip(worldPos: Vector3, col: Color3, rSize: number, tagTxt: string?)
+            if blipIdx >= RADAR_MAX_BLIPS then return end
+            local dx = worldPos.X - refPos.X
+            local dz = worldPos.Z - refPos.Z
+            local dist = math.sqrt(dx * dx + dz * dz)
+            if dist > maxRange then return end
+            local rx, ry: number
+            if rot then
+                rx = dx * cosY - dz * sinY
+                ry = dx * sinY + dz * cosY
+            else
+                rx = dx
+                ry = dz
+            end
+            local scale = (rad - 6) / maxRange
+            local pos2d = center + Vector2.new(rx * scale, ry * scale)
+            blipIdx += 1
+            local b = radar.Blips[blipIdx]
+            b.Dot.Position = pos2d
+            b.Dot.Radius = rSize
+            b.Dot.Color = col
+            b.Dot.Visible = true
+            if tagTxt and tagTxt ~= "" then
+                b.Label.Text = tagTxt
+                b.Label.Color = col
+                b.Label.Position = pos2d + Vector2.new(0, rSize + 1)
+                b.Label.Visible = true
+            else
+                b.Label.Visible = false
+            end
+        end
+
+        for model, entry in pairs(Actors) do
+            if model.Parent then
+                local hum = model:FindFirstChildOfClass("Humanoid")
+                local root = model:FindFirstChild("HumanoidRootPart") :: BasePart? or model.PrimaryPart
+                if hum and root and hum.Health > 0 then
+                    if entry.IsAI then
+                        if Config.World.RadarNPC then
+                            local ln = model.Name:lower()
+                            local isBoss = ln:find("whisper") or ln:find("dozer") or ln:find("death") or ln:find("boss") or ln:find("anton")
+                            pushBlip(root.Position, isBoss and Config.AIESP.BossColor or Config.AIESP.Color, isBoss and 4.0 or 2.8, isBoss and model.Name or nil)
+                        end
+                    elseif Config.World.RadarPlayers then
+                        local isTeam = entry.Player ~= nil and Delta.IsTeammate(entry.Player)
+                        local isDown = entry.Player ~= nil and Delta.IsPlayerDowned(entry.Player, model)
+                        local col = isTeam and Config.PlayerESP.SquadColor or (isDown and Config.PlayerESP.DownedColor or Config.PlayerESP.EnemyColor)
+                        pushBlip(root.Position, col, 3.2, entry.Player and entry.Player.DisplayName or nil)
+                    end
+                end
+            end
+        end
+
+        for _, tag in pairs(WorldTags) do
+            if tag.Root and tag.Root.Parent then
+                if tag.Category == "Exit" and Config.World.RadarExits then
+                    pushBlip(tag.Root.Position, Config.ExitESP.Color, 3.6, "EXIT")
+                elseif tag.Category == "Corpse" and Config.World.RadarCorpses then
+                    pushBlip(tag.Root.Position, Config.CorpseESP.Color, 2.5, nil)
+                end
+            end
+        end
+
+        for i = blipIdx + 1, RADAR_MAX_BLIPS do
+            radar.Blips[i].Dot.Visible = false
+            radar.Blips[i].Label.Visible = false
+        end
+    end
+end)()
 
 -- Connect Workspace & Players Event Listeners cleanly
 local function bindPlayerTracking(player: Player)
@@ -3461,6 +4410,8 @@ function Misc._HideAllVisualsNow()
     if FOVCircle then FOVCircle.Visible = false end
     if Combat._SilentLine then Combat._SilentLine.Visible = false end
     if Combat._SilentDot then Combat._SilentDot.Visible = false end
+    if World.HideRadar then World.HideRadar() end
+    if World._BossHudFrame then (World._BossHudFrame :: GuiObject).Visible = false end
     if Misc._Watermark then Misc._Watermark.Visible = false end
     if Misc._TargetHud then Misc._TargetHud.Visible = false end
 end
@@ -4292,6 +5243,9 @@ Session.OnStop(function()
     if Combat._SilentDot then
         pcall(function() Combat._SilentDot:Remove() end)
     end
+    if World.DestroyRadar then
+        World.DestroyRadar()
+    end
 end)
 
 -- ============================================================================
@@ -4798,6 +5752,44 @@ WatermarkText.Parent = WatermarkFrame
 
 Misc._Notify = UI.Notify
 Misc._Watermark = WatermarkFrame
+World._Notify = UI.Notify
+
+;(function()
+    local bossHud = Instance.new("Frame")
+    bossHud.Name = "BossCheckerHUD"
+    bossHud.AnchorPoint = Vector2.new(1, 0)
+    bossHud.Position = UDim2.new(1, -16, 0, 82)
+    bossHud.Size = UDim2.fromOffset(310, 26)
+    bossHud.BackgroundColor3 = THEME.BgMain
+    bossHud.BackgroundTransparency = 0.28
+    bossHud.Visible = false
+    bossHud.Parent = ScreenGui
+    addCorner(bossHud, 6)
+    addStroke(bossHud, Color3.fromRGB(245, 158, 11), 1, 0.35)
+
+    local bhBar = Instance.new("Frame")
+    bhBar.Size = UDim2.new(0, 3, 1, -8)
+    bhBar.Position = UDim2.fromOffset(6, 4)
+    bhBar.BackgroundColor3 = Color3.fromRGB(245, 158, 11)
+    bhBar.BorderSizePixel = 0
+    bhBar.Parent = bossHud
+    addCorner(bhBar, 2)
+
+    local bhLbl = Instance.new("TextLabel")
+    bhLbl.BackgroundTransparency = 1
+    bhLbl.Position = UDim2.fromOffset(15, 0)
+    bhLbl.Size = UDim2.new(1, -22, 1, 0)
+    bhLbl.Font = Enum.Font.GothamBold
+    bhLbl.TextSize = 11
+    bhLbl.TextColor3 = Color3.fromRGB(251, 191, 36)
+    bhLbl.TextXAlignment = Enum.TextXAlignment.Left
+    bhLbl.TextTruncate = Enum.TextTruncate.AtEnd
+    bhLbl.Text = "BOSS CHECKER: Scanning..."
+    bhLbl.Parent = bossHud
+
+    World._BossHudFrame = bossHud
+    World._BossHudText = bhLbl
+end)()
 
 -- Target Lock HUD (Top Center-Bottom)
 local TargetHudFrame = Instance.new("Frame")
@@ -5103,6 +6095,9 @@ function UI.ApplyGlassTheme()
     HeaderBar.BackgroundTransparency = subAlpha
     WatermarkFrame.BackgroundTransparency = math.clamp(g + 0.06, 0.10, 0.75)
     TargetHudFrame.BackgroundTransparency = math.clamp(g + 0.04, 0.10, 0.72)
+    if World._BossHudFrame and (World._BossHudFrame :: Instance).Parent then
+        (World._BossHudFrame :: Frame).BackgroundTransparency = math.clamp(g + 0.06, 0.10, 0.75)
+    end
     for _, rec in ipairs(UI._GlassCards) do
         if rec.Frame.Parent then
             rec.Frame.BackgroundTransparency = cardAlpha
@@ -6232,13 +7227,193 @@ function UI.AddEspCategoryRow(sec: Frame, label: string, getter: () -> boolean, 
     end)
 end
 
+function UI._AddPopupColorPicker(pop: Frame, label: string, getter: () -> Color3, setter: (Color3) -> ())
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, 0, 0, 22)
+    row.BackgroundTransparency = 1
+    row.ZIndex = 66
+    row.Parent = pop
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -44, 1, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextSize = 11
+    lbl.TextColor3 = THEME.TextPrimary
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Text = label
+    lbl.ZIndex = 66
+    lbl.Parent = row
+
+    local swatch = Instance.new("TextButton")
+    swatch.AnchorPoint = Vector2.new(1, 0.5)
+    swatch.Position = UDim2.new(1, 0, 0.5, 0)
+    swatch.Size = UDim2.fromOffset(30, 16)
+    swatch.BackgroundColor3 = getter()
+    swatch.Text = ""
+    swatch.AutoButtonColor = false
+    swatch.ZIndex = 66
+    swatch.Parent = row
+    addCorner(swatch, 4)
+    addStroke(swatch, THEME.Border, 1, 0.15)
+
+    local palette = Instance.new("Frame")
+    palette.Size = UDim2.new(1, 0, 0, 20)
+    palette.BackgroundTransparency = 1
+    palette.Visible = false
+    palette.ZIndex = 66
+    palette.Parent = pop
+
+    local pLayout = Instance.new("UIListLayout")
+    pLayout.FillDirection = Enum.FillDirection.Horizontal
+    pLayout.Padding = UDim.new(0, 4)
+    pLayout.Parent = palette
+
+    local POP_COLORS = {
+        Color3.fromRGB(56, 189, 248),
+        Color3.fromRGB(52, 211, 153),
+        Color3.fromRGB(68, 128, 72),
+        Color3.fromRGB(250, 204, 21),
+        Color3.fromRGB(251, 146, 60),
+        Color3.fromRGB(239, 68, 68),
+        Color3.fromRGB(168, 85, 247),
+        Color3.fromRGB(241, 245, 249),
+        Color3.fromRGB(22, 28, 42),
+    }
+
+    local open = false
+    local function togglePalette(forceOpen: boolean?)
+        local nextOpen = (forceOpen ~= nil) and forceOpen or (not open)
+        if nextOpen == open then return end
+        open = nextOpen
+        palette.Visible = open
+        if pop.AutomaticSize == Enum.AutomaticSize.None then
+            local delta = open and 26 or -26
+            pop.Size = UDim2.fromOffset(pop.Size.X.Offset, math.max(50, pop.Size.Y.Offset + delta))
+        end
+    end
+
+    for _, c in ipairs(POP_COLORS) do
+        local sb = Instance.new("TextButton")
+        sb.Size = UDim2.fromOffset(18, 18)
+        sb.BackgroundColor3 = c
+        sb.Text = ""
+        sb.AutoButtonColor = false
+        sb.ZIndex = 67
+        sb.Parent = palette
+        addCorner(sb, 4)
+        addStroke(sb, THEME.Border, 1, 0.35)
+        sb.MouseButton1Click:Connect(function()
+            setter(c)
+            swatch.BackgroundColor3 = c
+            UI.NotifyChange()
+        end)
+    end
+
+    swatch.MouseButton1Click:Connect(function()
+        swatch.BackgroundColor3 = getter()
+        togglePalette()
+    end)
+end
+
+local function spawnSectionPopover(anchorBtn: GuiObject, popHeight: number?, buildPopover: (pop: Frame, anchorBtn: GuiObject) -> ())
+    if ActivePopup then
+        closeActivePopup()
+        return
+    end
+    IgnoreNextPopupDismiss = true
+    local pop = Instance.new("Frame")
+    if popHeight then
+        pop.Size = UDim2.fromOffset(224, popHeight)
+    else
+        pop.Size = UDim2.fromOffset(224, 0)
+        pop.AutomaticSize = Enum.AutomaticSize.Y
+    end
+    pop.BackgroundColor3 = THEME.BgSidebar
+    pop.BackgroundTransparency = 0.08
+    pop.ZIndex = 65
+    pop.Parent = PopupLayer
+    addCorner(pop, 8)
+    addStroke(pop, THEME.Accent, 1, 0.4)
+
+    local pad = Instance.new("UIPadding")
+    pad.PaddingTop = UDim.new(0, 8)
+    pad.PaddingBottom = UDim.new(0, 8)
+    pad.PaddingLeft = UDim.new(0, 10)
+    pad.PaddingRight = UDim.new(0, 10)
+    pad.Parent = pop
+
+    local layout = Instance.new("UIListLayout")
+    layout.Padding = UDim.new(0, 6)
+    layout.Parent = pop
+
+    buildPopover(pop, anchorBtn)
+
+    local layerSize = PopupLayer.AbsoluteSize
+    local pw = pop.Size.X.Offset
+    local ph = (popHeight and popHeight > 0) and popHeight or math.max(pop.AbsoluteSize.Y, 120)
+    local px = math.clamp(anchorBtn.AbsolutePosition.X + anchorBtn.AbsoluteSize.X - pw, 8, math.max(8, layerSize.X - pw - 8))
+    local py = anchorBtn.AbsolutePosition.Y + anchorBtn.AbsoluteSize.Y + 4
+    if layerSize.Y > 0 and py + ph > layerSize.Y - 8 then
+        py = math.max(8, anchorBtn.AbsolutePosition.Y - ph - 4)
+    end
+    pop.Position = UDim2.fromOffset(px, py)
+    ActivePopup = pop
+end
+
+function UI.AddSubmenuRow(sec: Frame, label: string, buildPopover: (pop: Frame, anchorBtn: GuiObject) -> (), popHeight: number?)
+    local rowBtn = Instance.new("TextButton")
+    rowBtn.Size = UDim2.new(1, 0, 0, 24)
+    rowBtn.BackgroundColor3 = THEME.BgControl
+    rowBtn.BackgroundTransparency = 1
+    rowBtn.Text = ""
+    rowBtn.AutoButtonColor = false
+    rowBtn.Parent = sec
+    addCorner(rowBtn, 5)
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Position = UDim2.fromOffset(2, 0)
+    lbl.Size = UDim2.new(1, -24, 1, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextSize = 12
+    lbl.TextColor3 = THEME.TextPrimary
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Text = label
+    lbl.Parent = rowBtn
+
+    local arrow = Instance.new("TextLabel")
+    arrow.AnchorPoint = Vector2.new(1, 0.5)
+    arrow.Position = UDim2.new(1, -4, 0.5, 0)
+    arrow.Size = UDim2.fromOffset(14, 14)
+    arrow.BackgroundTransparency = 1
+    arrow.Font = Enum.Font.GothamBold
+    arrow.TextSize = 11
+    arrow.TextColor3 = THEME.TextSecondary
+    arrow.Text = ">"
+    arrow.Parent = rowBtn
+
+    Session.Bind(rowBtn.MouseEnter, function()
+        quickTween(rowBtn, { BackgroundTransparency = 0.45 }, 0.12)
+        arrow.TextColor3 = THEME.Accent
+    end)
+    Session.Bind(rowBtn.MouseLeave, function()
+        quickTween(rowBtn, { BackgroundTransparency = 1 }, 0.12)
+        arrow.TextColor3 = THEME.TextSecondary
+    end)
+    Session.Bind(rowBtn.MouseButton1Click, function()
+        spawnSectionPopover(rowBtn, popHeight, buildPopover)
+    end)
+end
+
 function UI.AddToggleWithConfig(
     sec: Frame,
     label: string,
     getter: () -> boolean,
     setter: (boolean) -> (),
-    buildPopover: (pop: Frame, anchorBtn: TextButton) -> (),
-    popHeight: number?
+    buildPopover: (pop: Frame, anchorBtn: GuiObject) -> (),
+    popHeight: number?,
+    warnBadge: boolean?
 )
     local row = Instance.new("Frame")
     row.Size = UDim2.new(1, 0, 0, 24)
@@ -6246,7 +7421,7 @@ function UI.AddToggleWithConfig(
     row.Parent = sec
 
     local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(1, -76, 1, 0)
+    lbl.Size = UDim2.new(1, warnBadge and -96 or -76, 1, 0)
     lbl.BackgroundTransparency = 1
     lbl.Font = Enum.Font.Gotham
     lbl.TextSize = 12
@@ -6254,6 +7429,22 @@ function UI.AddToggleWithConfig(
     lbl.TextXAlignment = Enum.TextXAlignment.Left
     lbl.Text = label
     lbl.Parent = row
+
+    if warnBadge then
+        local wb = Instance.new("TextLabel")
+        wb.AnchorPoint = Vector2.new(1, 0.5)
+        wb.Position = UDim2.new(1, -70, 0.5, 0)
+        wb.Size = UDim2.fromOffset(16, 16)
+        wb.BackgroundColor3 = Color3.fromRGB(60, 42, 12)
+        wb.BackgroundTransparency = 0.15
+        wb.Font = Enum.Font.GothamBold
+        wb.TextSize = 10
+        wb.TextColor3 = Color3.fromRGB(245, 158, 11)
+        wb.Text = "!"
+        wb.Parent = row
+        addCorner(wb, 4)
+        addStroke(wb, Color3.fromRGB(245, 158, 11), 1, 0.25)
+    end
 
     local gearBtn = Instance.new("TextButton")
     gearBtn.AnchorPoint = Vector2.new(1, 0.5)
@@ -6311,49 +7502,16 @@ function UI.AddToggleWithConfig(
     end)
 
     Session.Bind(gearBtn.MouseButton1Click, function()
-        if ActivePopup then
-            closeActivePopup()
-            return
-        end
-        IgnoreNextPopupDismiss = true
-        local pop = Instance.new("Frame")
-        pop.Size = UDim2.fromOffset(224, popHeight or 128)
-        pop.BackgroundColor3 = THEME.BgSidebar
-        pop.ZIndex = 65
-        pop.Parent = PopupLayer
-        addCorner(pop, 8)
-        addStroke(pop, THEME.Accent, 1, 0.45)
-
-        local pad = Instance.new("UIPadding")
-        pad.PaddingTop = UDim.new(0, 8)
-        pad.PaddingBottom = UDim.new(0, 8)
-        pad.PaddingLeft = UDim.new(0, 10)
-        pad.PaddingRight = UDim.new(0, 10)
-        pad.Parent = pop
-
-        local layout = Instance.new("UIListLayout")
-        layout.Padding = UDim.new(0, 6)
-        layout.Parent = pop
-
-        buildPopover(pop, gearBtn)
-
-        local layerSize = PopupLayer.AbsoluteSize
-        local pw, ph = pop.Size.X.Offset, pop.Size.Y.Offset
-        local px = math.clamp(gearBtn.AbsolutePosition.X - pw + 26, 8, math.max(8, layerSize.X - pw - 8))
-        local py = gearBtn.AbsolutePosition.Y + 24
-        if layerSize.Y > 0 and py + ph > layerSize.Y - 8 then
-            py = math.max(8, gearBtn.AbsolutePosition.Y - ph - 4)
-        end
-        pop.Position = UDim2.fromOffset(px, py)
-        ActivePopup = pop
+        spawnSectionPopover(gearBtn, popHeight, buildPopover)
     end)
 end
 
 -- ============================================================================
--- 10. POPULATE TABS (COMBAT, VISUALS, MISC, SETTINGS)
+-- 10. POPULATE TABS (COMBAT, VISUALS, WORLD, MISC, SETTINGS)
 -- ============================================================================
 local CombatTab = UI.AddTab("Combat")
 local VisualsTab = UI.AddTab("Visuals")
+UI._TabWorld = UI.AddTab("World")
 local MiscTab = UI.AddTab("Misc")
 local SettingsTab = UI.AddTab("Settings")
 
@@ -6739,6 +7897,225 @@ do
     UI.AddToggle(secWorld, "Custom FOV Override", function() return Config.World.CustomFOV end, function(v) Config.World.CustomFOV = v end)
     UI.AddSlider(secWorld, "Field of View", 60, 120, 1, "deg", function() return Config.World.FOVValue end, function(v) Config.World.FOVValue = v end)
 end
+
+-- ---- WORLD TAB ----
+;(function()
+    local worldTab = UI._TabWorld
+    local secWorld = UI.AddSection(worldTab, "Left", "World")
+
+    UI.AddSubmenuRow(secWorld, "Terrain Colors", function(pop)
+        addPopupToggle(pop, "Enable Custom Terrain", function() return Config.World.TerrainColorEnabled end, function(v)
+            Config.World.TerrainColorEnabled = v
+        end)
+        UI._AddPopupCycle(pop, "Preset", { "Default", "Cyber", "Arctic", "Mars", "Custom" }, function()
+            return Config.World.TerrainPreset
+        end, function(v)
+            Config.World.TerrainPreset = v
+            if v ~= "Default" then Config.World.TerrainColorEnabled = true end
+        end)
+        UI._AddPopupColorPicker(pop, "Grass Color", function() return Config.World.TerrainGrassColor end, function(c)
+            Config.World.TerrainGrassColor = c
+            Config.World.TerrainPreset = "Custom"
+            Config.World.TerrainColorEnabled = true
+        end)
+        UI._AddPopupColorPicker(pop, "Ground Color", function() return Config.World.TerrainGroundColor end, function(c)
+            Config.World.TerrainGroundColor = c
+            Config.World.TerrainPreset = "Custom"
+            Config.World.TerrainColorEnabled = true
+        end)
+        UI._AddPopupColorPicker(pop, "Rock Color", function() return Config.World.TerrainRockColor end, function(c)
+            Config.World.TerrainRockColor = c
+            Config.World.TerrainPreset = "Custom"
+            Config.World.TerrainColorEnabled = true
+        end)
+    end)
+
+    UI.AddSubmenuRow(secWorld, "Leaves", function(pop)
+        addPopupToggle(pop, "Custom Leaves Color", function() return Config.World.LeavesEnabled end, function(v)
+            Config.World.LeavesEnabled = v
+        end)
+        UI._AddPopupColorPicker(pop, "Leaves Color", function() return Config.World.LeavesColor end, function(c)
+            Config.World.LeavesColor = c
+            Config.World.LeavesEnabled = true
+        end)
+        addPopupToggle(pop, "Hide Leaves", function() return Config.World.LeavesHide end, function(v)
+            Config.World.LeavesHide = v
+        end)
+        addPopupSlider(pop, "Transparency", 0, 100, 5, "%", function() return Config.World.LeavesTransparency end, function(v)
+            Config.World.LeavesTransparency = v
+        end)
+    end)
+
+    UI.AddSubmenuRow(secWorld, "Tree Trunks", function(pop)
+        addPopupToggle(pop, "Custom Trunk Color", function() return Config.World.TrunksEnabled end, function(v)
+            Config.World.TrunksEnabled = v
+        end)
+        UI._AddPopupColorPicker(pop, "Trunk Color", function() return Config.World.TrunksColor end, function(c)
+            Config.World.TrunksColor = c
+            Config.World.TrunksEnabled = true
+        end)
+        addPopupToggle(pop, "Hide Trunks", function() return Config.World.TrunksHide end, function(v)
+            Config.World.TrunksHide = v
+        end)
+        addPopupSlider(pop, "Transparency", 0, 100, 5, "%", function() return Config.World.TrunksTransparency end, function(v)
+            Config.World.TrunksTransparency = v
+        end)
+    end)
+
+    UI.AddColorPicker(secWorld, "Water Color", function()
+        return Config.World.WaterColor
+    end, function(c)
+        Config.World.WaterColor = c
+        Config.World.WaterColorEnabled = true
+    end)
+    UI.AddToggle(secWorld, "No Grass", function() return Config.World.NoGrass end, function(v)
+        Config.World.NoGrass = v
+    end)
+    UI.AddToggle(secWorld, "No Mines", function() return Config.World.NoMines end, function(v)
+        Config.World.NoMines = v
+    end)
+
+    local secFeat = UI.AddSection(worldTab, "Left", "Features")
+    UI.AddToggle(secFeat, "Render Players", function() return Config.World.RenderPlayers end, function(v)
+        Config.World.RenderPlayers = v
+    end)
+    UI.AddToggleWithConfig(secFeat, "Boss Checker", function() return Config.World.BossChecker end, function(v)
+        Config.World.BossChecker = v
+    end, function(pop)
+        addPopupToggle(pop, "Notify on Spawn", function() return Config.World.BossNotify end, function(v) Config.World.BossNotify = v end)
+        addPopupToggle(pop, "Alert World Events", function() return Config.World.BossAlertEvents end, function(v) Config.World.BossAlertEvents = v end)
+        addPopupToggle(pop, "Show Status HUD", function() return Config.World.BossShowHUD end, function(v) Config.World.BossShowHUD = v end)
+    end, nil, true)
+
+    UI.AddToggleWithConfig(secFeat, "ExitLocations", function() return Config.ExitESP.Enabled end, function(v)
+        Config.ExitESP.Enabled = v
+        UI.RefreshAll()
+    end, function(pop)
+        addPopupSlider(pop, "Max Distance", 100, 3000, 50, "m", function() return Config.ExitESP.MaxDistance end, function(v)
+            Config.ExitESP.MaxDistance = v
+            UI.RefreshAll()
+        end)
+        UI._AddPopupColorPicker(pop, "Exit Color", function() return Config.ExitESP.Color end, function(c)
+            Config.ExitESP.Color = c
+            UI.RefreshAll()
+        end)
+        addPopupToggle(pop, "Show Timer", function() return Config.ExitESP.ShowTimer ~= false end, function(v) Config.ExitESP.ShowTimer = v end)
+        addPopupToggle(pop, "Show Tracers", function() return Config.ExitESP.Tracers == true end, function(v) Config.ExitESP.Tracers = v end)
+    end)
+
+    UI.AddToggleWithConfig(secFeat, "Radar", function() return Config.World.Radar end, function(v)
+        Config.World.Radar = v
+    end, function(pop)
+        addPopupSlider(pop, "Radar Size", 100, 260, 4, "px", function() return Config.World.RadarSize end, function(v) Config.World.RadarSize = v end)
+        addPopupSlider(pop, "Range", 80, 800, 20, "m", function() return Config.World.RadarRange end, function(v) Config.World.RadarRange = v end)
+        addPopupToggle(pop, "Rotate With Camera", function() return Config.World.RadarRotate end, function(v) Config.World.RadarRotate = v end)
+        addPopupToggle(pop, "Show Players", function() return Config.World.RadarPlayers end, function(v) Config.World.RadarPlayers = v end)
+        addPopupToggle(pop, "Show NPCs / Bosses", function() return Config.World.RadarNPC end, function(v) Config.World.RadarNPC = v end)
+        addPopupToggle(pop, "Show Corpses", function() return Config.World.RadarCorpses end, function(v) Config.World.RadarCorpses = v end)
+        addPopupToggle(pop, "Show Exits", function() return Config.World.RadarExits end, function(v) Config.World.RadarExits = v end)
+        addPopupSlider(pop, "Position X", 8, 900, 8, "px", function() return Config.World.RadarX end, function(v) Config.World.RadarX = v end)
+        addPopupSlider(pop, "Position Y", 8, 700, 8, "px", function() return Config.World.RadarY end, function(v) Config.World.RadarY = v end)
+    end)
+
+    local secLight = UI.AddSection(worldTab, "Right", "Lighting")
+    UI.AddToggleWithConfig(secLight, "Light", function() return Config.World.LightEnabled end, function(v)
+        Config.World.LightEnabled = v
+    end, function(pop)
+        addPopupSlider(pop, "Brightness", 0, 8, 0.2, "", function() return Config.World.Brightness end, function(v) Config.World.Brightness = v end)
+        addPopupSlider(pop, "Exposure", -2, 3, 0.1, "", function() return Config.World.Exposure end, function(v) Config.World.Exposure = v end)
+        UI._AddPopupColorPicker(pop, "Ambient Color", function() return Config.World.AmbientColor end, function(c) Config.World.AmbientColor = c end)
+        UI._AddPopupColorPicker(pop, "Outdoor Ambient", function() return Config.World.OutdoorAmbientColor end, function(c) Config.World.OutdoorAmbientColor = c end)
+    end)
+
+    UI.AddToggleWithConfig(secLight, "Time & Sun", function() return Config.World.TimeSunEnabled end, function(v)
+        Config.World.TimeSunEnabled = v
+    end, function(pop)
+        addPopupSlider(pop, "Clock Time", 0, 24, 0.5, "h", function() return Config.World.ClockTime end, function(v) Config.World.ClockTime = v end)
+        addPopupSlider(pop, "Sun Latitude", -90, 90, 2, "deg", function() return Config.World.Latitude end, function(v) Config.World.Latitude = v end)
+    end)
+
+    UI.AddToggleWithConfig(secLight, "Shadows", function() return Config.World.ShadowsEnabled end, function(v)
+        Config.World.ShadowsEnabled = v
+    end, function(pop)
+        addPopupToggle(pop, "Disable Shadows", function() return Config.World.DisableShadows end, function(v) Config.World.DisableShadows = v end)
+        addPopupSlider(pop, "Softness", 0, 1, 0.05, "", function() return Config.World.ShadowSoftness end, function(v) Config.World.ShadowSoftness = v end)
+        addPopupSlider(pop, "Diffuse Scale", 0, 1, 0.05, "", function() return Config.World.DiffuseScale end, function(v) Config.World.DiffuseScale = v end)
+    end)
+
+    UI.AddToggleWithConfig(secLight, "Rendering", function() return Config.World.RenderingEnabled end, function(v)
+        Config.World.RenderingEnabled = v
+    end, function(pop)
+        addPopupToggle(pop, "Custom FOV", function() return Config.World.CustomFOV end, function(v)
+            Config.World.CustomFOV = v
+            UI.RefreshAll()
+        end)
+        addPopupSlider(pop, "Field of View", 60, 120, 1, "deg", function() return Config.World.FOVValue end, function(v)
+            Config.World.FOVValue = v
+            UI.RefreshAll()
+        end)
+        addPopupSlider(pop, "Exposure Bias", -2, 3, 0.1, "", function() return Config.World.ExposureBias end, function(v) Config.World.ExposureBias = v end)
+    end)
+
+    UI.AddToggleWithConfig(secLight, "Fog", function() return Config.World.FogEnabled end, function(v)
+        Config.World.FogEnabled = v
+    end, function(pop)
+        addPopupToggle(pop, "Clear Air Preset", function() return Config.World.NoFog end, function(v)
+            Config.World.NoFog = v
+            if v then Config.World.FogEnd = 100000 end
+            UI.RefreshAll()
+        end)
+        addPopupSlider(pop, "Fog Start", 0, 1000, 10, "", function() return Config.World.FogStart end, function(v) Config.World.FogStart = v end)
+        addPopupSlider(pop, "Fog End", 50, 5000, 50, "", function() return Config.World.FogEnd end, function(v) Config.World.FogEnd = v end)
+        UI._AddPopupColorPicker(pop, "Fog Color", function() return Config.World.FogColor end, function(c) Config.World.FogColor = c end)
+    end)
+
+    UI.AddToggleWithConfig(secLight, "Atmosphere", function() return Config.World.AtmosphereEnabled end, function(v)
+        Config.World.AtmosphereEnabled = v
+    end, function(pop)
+        addPopupSlider(pop, "Density", 0, 1, 0.05, "", function() return Config.World.AtmoDensity end, function(v) Config.World.AtmoDensity = v end)
+        addPopupSlider(pop, "Haze", 0, 10, 0.2, "", function() return Config.World.AtmoHaze end, function(v) Config.World.AtmoHaze = v end)
+        addPopupSlider(pop, "Glare", 0, 10, 0.2, "", function() return Config.World.AtmoGlare end, function(v) Config.World.AtmoGlare = v end)
+        addPopupSlider(pop, "Offset", 0, 1, 0.05, "", function() return Config.World.AtmoOffset end, function(v) Config.World.AtmoOffset = v end)
+        UI._AddPopupColorPicker(pop, "Atmo Color", function() return Config.World.AtmoColor end, function(c) Config.World.AtmoColor = c end)
+    end)
+
+    UI.AddToggleWithConfig(secLight, "Sky", function() return Config.World.SkyEnabled end, function(v)
+        Config.World.SkyEnabled = v
+    end, function(pop)
+        UI._AddPopupCycle(pop, "Preset", { "Night Space", "Default" }, function() return Config.World.SkyPreset end, function(v)
+            Config.World.SkyPreset = v
+        end)
+        addPopupSlider(pop, "Star Count", 0, 5000, 250, "", function() return Config.World.SkyStars end, function(v) Config.World.SkyStars = v end)
+        addPopupToggle(pop, "Celestial Bodies", function() return Config.World.SkyCelestial end, function(v) Config.World.SkyCelestial = v end)
+    end)
+
+    UI.AddToggleWithConfig(secLight, "Clouds", function() return Config.World.CloudsEnabled end, function(v)
+        Config.World.CloudsEnabled = v
+    end, function(pop)
+        addPopupSlider(pop, "Cover", 0, 1, 0.05, "", function() return Config.World.CloudsCover end, function(v) Config.World.CloudsCover = v end)
+        addPopupSlider(pop, "Density", 0, 1, 0.05, "", function() return Config.World.CloudsDensity end, function(v) Config.World.CloudsDensity = v end)
+        UI._AddPopupColorPicker(pop, "Clouds Color", function() return Config.World.CloudsColor end, function(c) Config.World.CloudsColor = c end)
+    end)
+
+    UI.AddToggleWithConfig(secLight, "Bloom", function() return Config.World.BloomEnabled end, function(v)
+        Config.World.BloomEnabled = v
+    end, function(pop)
+        addPopupToggle(pop, "Disable Bloom", function() return Config.World.DisableBloom end, function(v) Config.World.DisableBloom = v end)
+        addPopupSlider(pop, "Intensity", 0, 3, 0.1, "", function() return Config.World.BloomIntensity end, function(v) Config.World.BloomIntensity = v end)
+        addPopupSlider(pop, "Size", 0, 56, 2, "", function() return Config.World.BloomSize end, function(v) Config.World.BloomSize = v end)
+        addPopupSlider(pop, "Threshold", 0.5, 4, 0.1, "", function() return Config.World.BloomThreshold end, function(v) Config.World.BloomThreshold = v end)
+    end)
+
+    UI.AddToggleWithConfig(secLight, "Blur", function() return Config.World.BlurEnabled end, function(v)
+        Config.World.BlurEnabled = v
+    end, function(pop)
+        addPopupToggle(pop, "Remove All Blur", function() return Config.World.NoBlurDOF end, function(v)
+            Config.World.NoBlurDOF = v
+            UI.RefreshAll()
+        end)
+        addPopupSlider(pop, "Blur Size", 0, 24, 1, "", function() return Config.World.BlurSize end, function(v) Config.World.BlurSize = v end)
+    end)
+end)()
 
 -- ---- MISC TAB ----
 do
@@ -8020,13 +9397,16 @@ Session.Bind(RunService.RenderStepped, function(dt: number)
         if Combat._SilentDot then Combat._SilentDot.Visible = false end
     end
 
-    -- ESP Renders
+    -- ESP & Radar Renders
     local vp = cam.ViewportSize
     for _, entry in pairs(Actors) do
         renderActorESP(entry, cam, vp)
     end
     for _, tag in pairs(WorldTags) do
         renderTagESP(tag, cam, vp)
+    end
+    if World.RenderRadar then
+        World.RenderRadar(cam, vp)
     end
 
     -- Target HUD
@@ -8072,4 +9452,4 @@ end
 
 UI.ApplyGlassTheme()
 ConfigMgr.TryAutoLoad()
-UI.Notify("Delta Suite Loaded", "Combat, Visuals & Misc active for Project Delta.", "success")
+UI.Notify("Delta Suite Loaded", "Combat, Visuals, World & Misc active for Project Delta.", "success")

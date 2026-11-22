@@ -231,7 +231,7 @@ local function createDefaultConfig()
             WallbangMaxWalls = 2,
             WallbangMaxThickness = 3.0,
             WallbangRespectNoPen = true,
-            AddFriendKey = Enum.UserInputType.MouseButton3 :: BindValue,
+            AddFriendKey = Enum.KeyCode.Unknown :: BindValue,
             RaycastBudget = 6,
         },
         WeaponMods = {
@@ -1632,7 +1632,7 @@ function Targeting.ToggleNearestFriend(): (Player?, boolean)
         return nil, false
     end
     local aim2D = Targeting.GetAimOrigin2D()
-    local maxPx = math.clamp(Targeting.GetEffectiveFOVRadius("Silent"), 80, 140)
+    local maxPx = math.clamp(math.max(Targeting.GetEffectiveFOVRadius("Silent"), Targeting.GetEffectiveFOVRadius("Aimbot")), 110, 180)
     local bestPlayer: Player? = nil
     local bestDist = maxPx
 
@@ -1711,6 +1711,9 @@ function Targeting.FindBestTarget(opts: {
             continue
         end
         if not entry.IsAI and entry.Player then
+            if Delta.IsFriend(entry.Player) then
+                continue
+            end
             if opts.TeamCheck and Delta.IsTeammate(entry.Player) then
                 continue
             end
@@ -2372,6 +2375,9 @@ local function stepTriggerBot()
             return
         end
         if entry.Player then
+            if Delta.IsFriend(entry.Player) then
+                return
+            end
             if Config.TriggerBot.TeamCheck and Delta.IsTeammate(entry.Player) then
                 return
             end
@@ -3787,8 +3793,9 @@ local function renderActorESP(entry: ActorEntry, cam: Camera, vp: Vector2)
         return
     end
 
+    local isFriend = (not isAI and entry.Player ~= nil) and Delta.IsFriend(entry.Player :: Player) or false
     local isTeam = (not isAI and entry.Player ~= nil) and Delta.IsTeammate(entry.Player :: Player) or false
-    if not isAI and Config.PlayerESP.TeamCheck and isTeam then
+    if not isAI and not isFriend and Config.PlayerESP.TeamCheck and isTeam then
         hideDrawingsTable(entry.Draw, entry.Highlight)
         return
     end
@@ -3854,8 +3861,13 @@ local function renderActorESP(entry: ActorEntry, cam: Camera, vp: Vector2)
         local title = (not isAI and entry.Player) and entry.Player.DisplayName or model.Name
         if isAI then
             title = "[NPC] " .. title
-        elseif detectBadge then
-            title = detectBadge .. " " .. title
+        else
+            if isFriend then
+                title = "[FRIEND] " .. title
+            end
+            if detectBadge then
+                title = detectBadge .. " " .. title
+            end
         end
         values.Name = { Text = title, Color = detectColor or primaryColor, Size = fontSize }
     end
@@ -7568,6 +7580,10 @@ do
     UI.AddToggle(secAim, "Target AI / Bots", function() return Config.Aimbot.TargetAI end, function(v) Config.Aimbot.TargetAI = v end)
     UI.AddToggle(secAim, "Lead Prediction", function() return Config.Aimbot.Prediction end, function(v) Config.Aimbot.Prediction = v end)
     UI.AddToggle(secAim, "Bullet Drop Comp", function() return Config.Aimbot.DropComp end, function(v) Config.Aimbot.DropComp = v end)
+    UI.AddKeybindRow(secAim, "Add Not Attack", function() return Config.Targeting.AddFriendKey end, function(k)
+        Config.Targeting.AddFriendKey = k
+        UI.RefreshAll()
+    end)
 
     local secFov = UI.AddSection(CombatTab, "Left", "FOV Circle")
     UI.AddToggle(secFov, "Show FOV Circle", function() return Config.Aimbot.ShowFOV end, function(v) Config.Aimbot.ShowFOV = v end)
@@ -7623,6 +7639,10 @@ do
     UI.AddToggle(secSilent, "Ballistic Prediction", function() return Config.SilentAim.Prediction end, function(v) Config.SilentAim.Prediction = v end)
     UI.AddToggle(secSilent, "Bullet Drop Comp", function() return Config.SilentAim.DropComp end, function(v) Config.SilentAim.DropComp = v end)
     UI.AddToggle(secSilent, "Show Target Line", function() return Config.SilentAim.TargetLine end, function(v) Config.SilentAim.TargetLine = v end)
+    UI.AddKeybindRow(secSilent, "Add Not Attack", function() return Config.Targeting.AddFriendKey end, function(k)
+        Config.Targeting.AddFriendKey = k
+        UI.RefreshAll()
+    end)
 
     local secTargeting = UI.AddSection(CombatTab, "Right", "Targeting")
     UI.AddSlider(secTargeting, "FOV", 25, 500, 5, "", function() return Config.Targeting.FOV end, function(v)
@@ -7677,8 +7697,13 @@ do
             Config.Targeting.WallbangRespectNoPen = v
         end)
     end)
-    UI.AddKeybindRow(secTargeting, "Add Friend", function() return Config.Targeting.AddFriendKey end, function(k)
+    UI.AddKeybindRow(secTargeting, "Add Not Attack", function() return Config.Targeting.AddFriendKey end, function(k)
         Config.Targeting.AddFriendKey = k
+        UI.RefreshAll()
+    end)
+    UI.AddButton(secTargeting, "Clear Not Attack List", "normal", function()
+        Delta.ClearFriends()
+        UI.Notify("Not Attack", "Cleared all added players.", "info")
     end)
     UI.AddSlider(secTargeting, "Raycast Budget", 1, 16, 1, "", function() return Config.Targeting.RaycastBudget end, function(v)
         Config.Targeting.RaycastBudget = v
@@ -9233,13 +9258,13 @@ Session.Bind(UserInputService.InputBegan, function(input: InputObject, gameProce
         if input.UserInputType == Enum.UserInputType.MouseMovement then
             return
         end
-        if code == Enum.KeyCode.Escape or code == Enum.KeyCode.Backspace then
-            ListeningPicker.Set(Enum.KeyCode.Unknown)
-        else
-            ListeningPicker.Set(code)
-        end
         local done = ListeningPicker
         ListeningPicker = nil
+        if code == Enum.KeyCode.Escape or code == Enum.KeyCode.Backspace then
+            done.Set(Enum.KeyCode.Unknown)
+        else
+            done.Set(code)
+        end
         done.Refresh()
         return
     end
@@ -9298,9 +9323,9 @@ Session.Bind(UserInputService.InputBegan, function(input: InputObject, gameProce
     if code ~= Enum.KeyCode.Unknown and code == Config.Targeting.AddFriendKey then
         local plr, added = Targeting.ToggleNearestFriend()
         if plr then
-            UI.Notify("Friends", string.format("%s %s whitelist", plr.DisplayName, added and "added to" or "removed from"), added and "success" or "info")
+            UI.Notify("Not Attack", string.format("%s %s (friend / do not attack)", plr.DisplayName, added and "added" or "removed"), added and "success" or "info")
         else
-            UI.Notify("Friends", "No player near crosshair", "info")
+            UI.Notify("Not Attack", "No player near crosshair", "info")
         end
     end
     if code ~= Enum.KeyCode.Unknown and code == Config.TriggerBot.Key then

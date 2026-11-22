@@ -1,6 +1,6 @@
 # DeltaSuite — Project Delta
 
-Script modular en Luau con interfaz táctica limpia para **Project Delta** (`PlaceId: 7336302630`), organizado en **Combat**, **Visuals**, **Misc** y **Settings**.
+Script modular en Luau con interfaz táctica translúcida para **Project Delta** (`PlaceId: 7336302630`), organizado en **Combat**, **Visuals**, **World**, **Misc** y **Settings**.
 
 ## Ejecución rápida (Loadstring)
 
@@ -32,7 +32,11 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/jakrjone123/DeltaSuit
   - **PREVIEW interactivo en las 6 categorías ESP**:
     - **Player y Npc**: Muñeco 3D lateral con overlays en tiempo real; permite arrastrar y apilar etiquetas (`Name`, `Health`, `Distance`, `Weapon`, `KDR`, `Reports`, `Downed`) y la barra `HealthBar` exclusivamente entre **Arriba**, **Abajo**, **Izquierda** y **Derecha**.
     - **Corpse, Container, Dropped Item y Quest Items**: Cubo 3D táctico lateral con soporte en vivo de `Chams`, `Box`/`Corner` con relleno translúcido, `Skeleton` (Corpse), `Tracers`, `Arrows` y arrastre ordenado de etiquetas (`Name`, `Distance`, `Value`, `Respawn`) entre las 4 zonas.
-  - **Extractions & World**: Ubicaciones de extracción (`ExitLocations`), Fullbright, Brightness/ClockTime, No Fog (`Atmosphere`), No Blur/DOF (`Lighting` PostEffects) y Custom FOV.
+  - **Extractions & World**: Ubicaciones de extracción (`ExitLocations`) y ajustes rápidos de iluminación/visión.
+- **World**
+  - **World**: `Terrain Colors` (presets `Default` / `Cyber` / `Arctic` / `Mars` / `Custom` y colores por material), `Leaves` y `Tree Trunks` (tinte de malla/`SurfaceAppearance`, transparencia y ocultación), `Water Color`, `No Grass` (`Terrain.Decoration`) y `No Mines` (desactivación segura de `PMN2`/`MON50`/minas y prompts).
+  - **Features**: `Render Players`, `Boss Checker` (detección de bosses/eventos en vivo con alertas y barra HUD), `ExitLocations` (distancia, color, temporizador y tracers) y `Radar` táctico 2D rotatorio en tiempo real (jugadores, NPC/Boss, cadáveres y extracciones).
+  - **Lighting**: 10 controles modulares con popovers independientes (`Light`, `Time & Sun`, `Shadows`, `Rendering`, `Fog`, `Atmosphere`, `Sky`, `Clouds`, `Bloom` y `Blur`) con respaldo y restauración completa.
 - **Misc**
   - **Misc**: `Fast Trade` (desbloquea validación y botones `Confirm`/`Exchange`), `Panic Mode` (`End` por defecto, con popover `Panic Key` / `Hide Visuals` / `Disable Combat` / `Hide Menu`), `Pass Door` (traspasar puertas dentro de rango + popover `Pass Key` / `Mode` / `Phase Range` / `Auto Open Unlocked`), `Screen Effects` (oculta flashbang/ear-ringing/visor/daño manteniendo pantallas de muerte y miras), `Report Notify` (`UAC.Reports` y `ReportList.Recent`), y `Join Notify` (entradas/salidas con antigüedad y banderas).
   - **Detect**: detección automática de `Content Creator` (`[CC]`), `Tester` (`[TESTER]`), `Moderator` (`[MOD]`, rango grupo Project Delta + `ChatTags`) y `Cheater` (`[CHEATER]` por `TotalFlags` / `HSR` / `KDR`), con popover independiente para `Notify Alert`, `ESP Badge` y umbrales.

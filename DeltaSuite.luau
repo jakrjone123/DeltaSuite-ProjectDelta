@@ -891,30 +891,50 @@ function Delta.GetPlayerMeta(player: Player): (string?, number, boolean)
 
     local cached = PlayerMetaCache[player]
     local now = os.clock()
-    if cached and (now - cached.UpdatedAt) < 1.5 then
+    if cached and cached.KDR ~= nil and (now - cached.UpdatedAt) < 1.5 then
         return cached.KDR, math.max(uacReports, cached.ReportListFlags), beingBanned
     end
 
     local status = rsPlayer and rsPlayer:FindFirstChild("Status")
     local journey = status and status:FindFirstChild("Journey")
+    -- Project Delta's ReportGui computes official player K/D/R from Status.Journey.Statistics (career PvP stats)
+    local careerStats = journey and journey:FindFirstChild("Statistics")
     local wipeStats = journey and journey:FindFirstChild("WipeStatistics")
     local statsF = (rsPlayer and (rsPlayer:FindFirstChild("Stats") or rsPlayer:FindFirstChild("StartUp"))) or nil
     local leader = player:FindFirstChild("leaderstats")
-    local sources: { Instance? } = { wipeStats, journey, status, rsPlayer, player, leader, statsF }
+    local sources: { Instance? } = { careerStats, wipeStats, journey, status, rsPlayer, player, leader, statsF }
 
     local kdrStr: string? = nil
     local rlFlags = 0
 
-    -- Check ReplicatedStorage.ReportList (MostWanted & Recent use "<PlayerName>_<UserId>" with KDR & TotalFlags)
+    -- Compute live PvP KDR cleanly from the same stat container (career Statistics first, then WipeStatistics)
+    for _, statNode in ipairs({ careerStats, wipeStats, statsF }) do
+        if statNode then
+            local kp = statNode:GetAttribute("K_PVP")
+            local dp = statNode:GetAttribute("D_PVP")
+            if type(kp) == "number" then
+                kdrStr = string.format("%.2f", kp / math.max(type(dp) == "number" and dp or 0, 1))
+                break
+            end
+        end
+    end
+
+    -- Fallback: ReplicatedStorage.ReportList (MostWanted & Recent carry "Kills/Deaths/Ratio" & TotalFlags)
     local repFolder = findReportListFolder(ReplicatedStorage:FindFirstChild("ReportList"), player)
     if repFolder then
-        local rawKdr = repFolder:GetAttribute("KDR")
-        if type(rawKdr) == "string" and rawKdr ~= "" then
-            -- Project Delta stores "Kills/Deaths/Ratio" e.g. "16366/12404/1.3"
-            local ratio = rawKdr:match("/([^/]+)$")
-            kdrStr = ratio or rawKdr
-        elseif type(rawKdr) == "number" then
-            kdrStr = string.format("%.2f", rawKdr)
+        if not kdrStr then
+            local rawKdr = repFolder:GetAttribute("KDR")
+            if type(rawKdr) == "string" and rawKdr ~= "" then
+                local killsPart, deathsPart, ratioPart = rawKdr:match("^(%d+)/(%d+)/([^/]+)$")
+                if killsPart and deathsPart then
+                    local kn, dn = tonumber(killsPart) or 0, tonumber(deathsPart) or 0
+                    kdrStr = string.format("%.2f", kn / math.max(dn, 1))
+                else
+                    kdrStr = ratioPart or rawKdr:match("/([^/]+)$") or rawKdr
+                end
+            elseif type(rawKdr) == "number" then
+                kdrStr = string.format("%.2f", rawKdr)
+            end
         end
         local flags = repFolder:GetAttribute("TotalFlags")
         if type(flags) == "number" then
@@ -924,13 +944,19 @@ function Delta.GetPlayerMeta(player: Player): (string?, number, boolean)
 
     if not kdrStr then
         local kdrNum = readNumericStat(sources, { "KDR", "KD", "KillDeathRatio" })
-        local kills = readNumericStat(sources, { "K_PVP", "Kills", "PlayerKills", "Eliminations" })
-        local deaths = readNumericStat(sources, { "D_PVP", "Deaths" })
         if kdrNum ~= nil then
             kdrStr = string.format("%.2f", kdrNum)
-        elseif kills ~= nil then
-            local d = math.max(deaths or 1, 1)
-            kdrStr = string.format("%.2f", kills / d)
+        else
+            for _, src in ipairs(sources) do
+                if src then
+                    local kills = readNumericStat({ src }, { "K_PVP", "Kills", "PlayerKills", "Eliminations" })
+                    local deaths = readNumericStat({ src }, { "D_PVP", "Deaths" })
+                    if kills ~= nil then
+                        kdrStr = string.format("%.2f", kills / math.max(deaths or 0, 1))
+                        break
+                    end
+                end
+            end
         end
     end
 
@@ -939,7 +965,9 @@ function Delta.GetPlayerMeta(player: Player): (string?, number, boolean)
         rlFlags = math.max(rlFlags, statRep)
     end
 
-    PlayerMetaCache[player] = { KDR = kdrStr, ReportListFlags = rlFlags, UpdatedAt = now }
+    if kdrStr or rlFlags > 0 then
+        PlayerMetaCache[player] = { KDR = kdrStr, ReportListFlags = rlFlags, UpdatedAt = now }
+    end
     return kdrStr, math.max(uacReports, rlFlags), beingBanned
 end
 
@@ -4813,10 +4841,10 @@ local function readPlayerReportStats(player: Player): (number, number, number)
     if kdr == 0 and rsPlr then
         local st = rsPlr:FindFirstChild("Status")
         local jr = st and st:FindFirstChild("Journey")
-        local ws = jr and jr:FindFirstChild("WipeStatistics")
-        if ws then
-            local kp = tonumber(ws:GetAttribute("K_PVP")) or 0
-            local dp = tonumber(ws:GetAttribute("D_PVP")) or 0
+        local cs = jr and (jr:FindFirstChild("Statistics") or jr:FindFirstChild("WipeStatistics"))
+        if cs then
+            local kp = tonumber(cs:GetAttribute("K_PVP")) or 0
+            local dp = tonumber(cs:GetAttribute("D_PVP")) or 0
             if kp >= 10 then
                 kdr = kp / math.max(dp, 1)
             end
@@ -8845,13 +8873,31 @@ end
     local stageGrad = Instance.new("UIGradient")
     stageGrad.Rotation = 90
     stageGrad.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, Color3.fromRGB(16, 21, 31)),
-        ColorSequenceKeypoint.new(0.5, Color3.fromRGB(10, 13, 20)),
-        ColorSequenceKeypoint.new(1, Color3.fromRGB(15, 20, 29)),
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(8, 9, 12)),
+        ColorSequenceKeypoint.new(0.5, Color3.fromRGB(13, 15, 19)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(7, 8, 10)),
     })
     stageGrad.Parent = Stage
 
-    -- Sleek Dual-Ring Pedestal plate underneath dummy / cube
+    -- Soft radial spotlight halo behind the character silhouette
+    for _, haloSpec in ipairs({
+        { Size = 248, Y = 212, Color = Color3.fromRGB(58, 61, 68), Trans = 0.88 },
+        { Size = 182, Y = 210, Color = Color3.fromRGB(74, 77, 85), Trans = 0.84 },
+        { Size = 118, Y = 208, Color = Color3.fromRGB(92, 96, 104), Trans = 0.82 },
+    }) do
+        local halo = Instance.new("Frame")
+        halo.AnchorPoint = Vector2.new(0.5, 0.5)
+        halo.Position = UDim2.fromOffset(STAGE_W * 0.5, haloSpec.Y)
+        halo.Size = UDim2.fromOffset(haloSpec.Size, haloSpec.Size)
+        halo.BackgroundColor3 = haloSpec.Color
+        halo.BackgroundTransparency = haloSpec.Trans
+        halo.BorderSizePixel = 0
+        halo.ZIndex = 1
+        halo.Parent = Stage
+        addCorner(halo, haloSpec.Size)
+    end
+
+    -- 2D Pedestal plate (shown for Loot Cube mode; Dummy mode uses the 3D Octagon Pedestal)
     local Pedestal = Instance.new("Frame")
     Pedestal.AnchorPoint = Vector2.new(0.5, 0.5)
     Pedestal.Position = UDim2.fromOffset(curBoxX + curBoxW * 0.5, curBoxY + curBoxH - 2)
@@ -8859,6 +8905,7 @@ end
     Pedestal.BackgroundColor3 = Color3.fromRGB(17, 23, 35)
     Pedestal.BackgroundTransparency = 0.22
     Pedestal.ZIndex = 2
+    Pedestal.Visible = false
     Pedestal.Parent = Stage
     addCorner(Pedestal, 11)
     local pedestalStroke = addStroke(Pedestal, THEME.Accent, 1, 0.45)
@@ -8874,14 +8921,14 @@ end
     addCorner(PedestalInner, 8)
     local pedestalInnerStroke = addStroke(PedestalInner, THEME.Border, 1, 0.35)
 
-    -- 3D ViewportFrame in center (switches between Sculpted R15 Tactical Operator & Loot Cube)
+    -- 3D ViewportFrame in center (Obsidian R15 Character + 3D Octagon Pedestal / Loot Cube)
     local CharViewport = Instance.new("ViewportFrame")
-    CharViewport.Position = UDim2.fromOffset(curBoxX - 18, curBoxY - 12)
-    CharViewport.Size = UDim2.fromOffset(curBoxW + 36, curBoxH + 22)
+    CharViewport.Position = UDim2.fromOffset(curBoxX - 58, curBoxY - 14)
+    CharViewport.Size = UDim2.fromOffset(curBoxW + 116, curBoxH + 46)
     CharViewport.BackgroundTransparency = 1
-    CharViewport.Ambient = Color3.fromRGB(134, 150, 178)
-    CharViewport.LightColor = Color3.fromRGB(238, 246, 255)
-    CharViewport.LightDirection = Vector3.new(-0.55, -0.72, -0.68)
+    CharViewport.Ambient = Color3.fromRGB(84, 90, 102)
+    CharViewport.LightColor = Color3.fromRGB(242, 246, 255)
+    CharViewport.LightDirection = Vector3.new(-0.22, -1.0, -0.35)
     CharViewport.ZIndex = 3
     CharViewport.Parent = Stage
 
@@ -8890,20 +8937,17 @@ end
 
     local DummyCam = Instance.new("Camera")
     DummyCam.FieldOfView = 38
-    DummyCam.CFrame = CFrame.lookAt(Vector3.new(0.24, 0.24, 7.65), Vector3.new(0, 0.04, 0))
+    DummyCam.CFrame = CFrame.lookAt(Vector3.new(0, 0.85, 8.20), Vector3.new(0, -0.18, 0))
     DummyCam.Parent = CharViewport
     CharViewport.CurrentCamera = DummyCam
 
     local DummyModel = Instance.new("Model")
-    DummyModel.Name = "TacticalOperator"
+    DummyModel.Name = "DeltaDummyRig"
     DummyModel.Parent = WorldM
 
     local DummyParts: { { Part: BasePart, Role: string } } = {}
     local DummySkelWorldSegs: { { Vector3 } } = {}
     do
-        -- 3/4 Hero Tactical Stance (+Z faces Camera)
-        local rigCF = CFrame.new(0, 0, 0) * CFrame.Angles(0, math.rad(16), 0)
-
         local function addRigPart(
             name: string,
             size: Vector3,
@@ -8916,7 +8960,7 @@ end
             local p = Instance.new("Part")
             p.Name = name
             p.Size = size
-            p.CFrame = rigCF * localCF
+            p.CFrame = localCF
             p.Anchored = true
             p.Material = mat or Enum.Material.SmoothPlastic
             p.TopSurface = Enum.SurfaceType.Smooth
@@ -8934,90 +8978,76 @@ end
             return p
         end
 
-        local function addLimbSeg(name: string, a: Vector3, b: Vector3, width: number, depth: number, role: string)
-            local diff = b - a
-            local len = diff.Magnitude
-            local mid = (a + b) * 0.5
-            local unit = diff / math.max(len, 0.001)
-            local up = math.abs(unit:Dot(Vector3.yAxis)) > 0.94 and Vector3.zAxis or Vector3.yAxis
-            addRigPart(name, Vector3.new(width, depth, len + 0.14), CFrame.lookAt(mid, b, up), role)
-        end
-
-        -- Rig Joint Positions (rig-local space, +Z forward toward camera)
+        -- Clean Sleek Obsidian R15 Character (+Z faces Camera)
         local j = {
-            HeadTop = Vector3.new(0, 2.26, 0.02),
-            HeadMid = Vector3.new(0, 1.82, 0.02),
-            Neck = Vector3.new(0, 1.38, 0.02),
-            Chest = Vector3.new(0, 1.02, 0.02),
-            Pelvis = Vector3.new(0, 0.04, 0),
-            LShoulder = Vector3.new(0.84, 1.18, 0.02),
-            LElbow = Vector3.new(1.00, 0.56, 0.14),
-            LHand = Vector3.new(0.28, 0.34, 0.56),
-            RShoulder = Vector3.new(-0.84, 1.18, 0.02),
-            RElbow = Vector3.new(-0.98, 0.58, 0.18),
-            RHand = Vector3.new(-0.34, 0.42, 0.62),
-            LHip = Vector3.new(0.37, -0.10, 0),
-            LKnee = Vector3.new(0.42, -1.04, 0.14),
-            LFoot = Vector3.new(0.45, -1.94, 0.04),
-            RHip = Vector3.new(-0.37, -0.10, 0),
-            RKnee = Vector3.new(-0.41, -1.02, -0.04),
-            RFoot = Vector3.new(-0.44, -1.94, -0.10),
+            HeadTop = Vector3.new(0, 2.15, 0),
+            HeadMid = Vector3.new(0, 1.66, 0),
+            Neck = Vector3.new(0, 1.18, 0),
+            Pelvis = Vector3.new(0, -0.26, 0),
+            LShoulder = Vector3.new(-1.26, 0.88, 0),
+            LElbow = Vector3.new(-1.31, 0.24, 0),
+            LHand = Vector3.new(-1.35, -0.44, 0),
+            RShoulder = Vector3.new(1.26, 0.88, 0),
+            RElbow = Vector3.new(1.31, 0.24, 0),
+            RHand = Vector3.new(1.35, -0.44, 0),
+            LHip = Vector3.new(-0.45, -0.34, 0),
+            LKnee = Vector3.new(-0.45, -1.16, 0),
+            LFoot = Vector3.new(-0.45, -1.96, 0),
+            RHip = Vector3.new(0.45, -0.34, 0),
+            RKnee = Vector3.new(0.45, -1.16, 0),
+            RFoot = Vector3.new(0.45, -1.96, 0),
         }
 
-        -- Rounded R15 Head, Balaclava Collar, Tactical Helmet, EarPro & Visor
-        addRigPart("Head", Vector3.new(1.00, 1.00, 1.00), CFrame.new(j.HeadMid), "Skin", Enum.MeshType.Head, Vector3.new(1.06, 1.08, 1.06))
-        addRigPart("Neck", Vector3.new(0.48, 0.34, 0.48), CFrame.new(0, 1.38, 0.01), "Skin", Enum.MeshType.Cylinder)
-        addRigPart("HelmetCap", Vector3.new(1.16, 0.66, 1.22), CFrame.new(0, 2.02, 0.01), "Armor", Enum.MeshType.Sphere)
-        addRigPart("HelmetRim", Vector3.new(1.10, 0.12, 1.12), CFrame.new(0, 1.88, 0.04) * CFrame.Angles(math.rad(-6), 0, 0), "Armor", Enum.MeshType.Sphere)
-        addRigPart("NVGMount", Vector3.new(0.24, 0.16, 0.12), CFrame.new(0, 2.00, 0.57), "Gear")
-        addRigPart("HeadsetL", Vector3.new(0.14, 0.36, 0.30), CFrame.new(0.55, 1.78, 0), "Gear", Enum.MeshType.Sphere)
-        addRigPart("HeadsetR", Vector3.new(0.14, 0.36, 0.30), CFrame.new(-0.55, 1.78, 0), "Gear", Enum.MeshType.Sphere)
-        addRigPart("Visor", Vector3.new(0.84, 0.22, 0.32), CFrame.new(0, 1.82, 0.43), "Visor", Enum.MeshType.Sphere, nil, Enum.Material.Neon)
+        addRigPart("Head", Vector3.new(1.12, 1.12, 1.12), CFrame.new(j.HeadMid), "Body", Enum.MeshType.Head, Vector3.new(1.06, 1.06, 1.06))
+        addRigPart("UpperTorso", Vector3.new(1.78, 1.34, 0.92), CFrame.new(0, 0.37, 0), "Body")
+        addRigPart("LowerTorso", Vector3.new(1.74, 0.44, 0.90), CFrame.new(0, -0.56, 0), "Body")
 
-        -- Sculpted Torso, Plate Carrier Rig, Pouches, Belt & Drop Holster
-        addRigPart("UpperTorso", Vector3.new(1.42, 1.08, 0.72), CFrame.new(0, 0.86, 0), "Base")
-        addRigPart("LowerTorso", Vector3.new(1.30, 0.48, 0.68), CFrame.new(0, 0.12, 0), "Base")
-        addRigPart("PlateCarrier", Vector3.new(1.18, 0.88, 0.84), CFrame.new(0, 0.86, 0.02), "Armor")
-        addRigPart("ShoulderPadL", Vector3.new(0.36, 0.22, 0.76), CFrame.new(0.58, 1.32, 0.01) * CFrame.Angles(0, 0, math.rad(-14)), "Armor")
-        addRigPart("ShoulderPadR", Vector3.new(0.36, 0.22, 0.76), CFrame.new(-0.58, 1.32, 0.01) * CFrame.Angles(0, 0, math.rad(14)), "Armor")
-        for idx = -1, 1 do
-            addRigPart("MagPouch" .. tostring(idx + 2), Vector3.new(0.26, 0.36, 0.16), CFrame.new(idx * 0.33, 0.64, 0.47), "Gear")
-        end
-        addRigPart("AdminPouch", Vector3.new(0.54, 0.22, 0.14), CFrame.new(0, 1.02, 0.46), "Gear")
-        addRigPart("DutyBelt", Vector3.new(1.38, 0.20, 0.78), CFrame.new(0, 0.06, 0), "Gear")
-        addRigPart("BeltBuckle", Vector3.new(0.26, 0.18, 0.10), CFrame.new(0, 0.06, 0.38), "Armor")
-        addRigPart("Holster", Vector3.new(0.22, 0.42, 0.34), CFrame.new(-0.62, -0.36, 0.04) * CFrame.Angles(0, 0, math.rad(-4)), "Gear")
+        addRigPart("LeftArm", Vector3.new(0.84, 1.62, 0.86), CFrame.new(-1.33, 0.24, 0) * CFrame.Angles(0, 0, math.rad(-2.5)), "Body")
+        addRigPart("LeftHandCuff", Vector3.new(0.85, 0.16, 0.87), CFrame.new(-1.36, -0.49, 0) * CFrame.Angles(0, 0, math.rad(-2.5)), "Cuff")
+        addRigPart("RightArm", Vector3.new(0.84, 1.62, 0.86), CFrame.new(1.33, 0.24, 0) * CFrame.Angles(0, 0, math.rad(2.5)), "Body")
+        addRigPart("RightHandCuff", Vector3.new(0.85, 0.16, 0.87), CFrame.new(1.36, -0.49, 0) * CFrame.Angles(0, 0, math.rad(2.5)), "Cuff")
 
-        -- Articulated R15 Arms, Forearms, Gloves & Compact Tactical Carbine (Low-Ready)
-        addLimbSeg("LeftUpperArm", j.LShoulder, j.LElbow, 0.48, 0.48, "Base")
-        addLimbSeg("LeftLowerArm", j.LElbow, j.LHand, 0.42, 0.42, "Armor")
-        addRigPart("LeftHand", Vector3.new(0.32, 0.30, 0.32), CFrame.new(j.LHand), "Gear", Enum.MeshType.Sphere)
-        addLimbSeg("RightUpperArm", j.RShoulder, j.RElbow, 0.48, 0.48, "Base")
-        addLimbSeg("RightLowerArm", j.RElbow, j.RHand, 0.42, 0.42, "Armor")
-        addRigPart("RightHand", Vector3.new(0.32, 0.30, 0.32), CFrame.new(j.RHand), "Gear", Enum.MeshType.Sphere)
+        addRigPart("LeftLeg", Vector3.new(0.84, 1.18, 0.88), CFrame.new(-0.45, -1.43, 0), "Body")
+        addRigPart("RightLeg", Vector3.new(0.84, 1.18, 0.88), CFrame.new(0.45, -1.43, 0), "Body")
 
-        do
-            local gunMid = (j.LHand + j.RHand) * 0.5 + Vector3.new(0, -0.02, 0.06)
-            local gunCF = CFrame.lookAt(gunMid, j.RHand + Vector3.new(-0.55, -0.10, 0.18))
-            addRigPart("CarbineBody", Vector3.new(0.13, 0.22, 0.88), gunCF, "Gear")
-            addRigPart("CarbineBarrel", Vector3.new(0.08, 0.08, 0.62), gunCF * CFrame.new(0, 0.03, -0.68), "Gear")
-            addRigPart("CarbineStock", Vector3.new(0.11, 0.26, 0.44), gunCF * CFrame.new(0, -0.03, 0.56), "Armor")
-            addRigPart("CarbineMag", Vector3.new(0.10, 0.34, 0.16), gunCF * CFrame.new(0, -0.24, -0.10) * CFrame.Angles(math.rad(-14), 0, 0), "Gear")
-            addRigPart("CarbineOptic", Vector3.new(0.11, 0.12, 0.22), gunCF * CFrame.new(0, 0.16, 0.05), "Armor")
+        -- Crisp 3D Stencil Initials "DS" flush on the chest front (+Z = +0.475)
+        local chestZ = 0.475
+        local dsSegs = {
+            -- Letter 'D' (left)
+            { Vector3.new(-0.45, 0.56, chestZ), Vector3.new(0.065, 0.38, 0.03) },
+            { Vector3.new(-0.30, 0.72, chestZ), Vector3.new(0.28, 0.06, 0.03) },
+            { Vector3.new(-0.30, 0.40, chestZ), Vector3.new(0.28, 0.06, 0.03) },
+            { Vector3.new(-0.14, 0.56, chestZ), Vector3.new(0.065, 0.26, 0.03) },
+            -- Letter 'S' (right)
+            { Vector3.new(0.29, 0.72, chestZ), Vector3.new(0.34, 0.06, 0.03) },
+            { Vector3.new(0.15, 0.64, chestZ), Vector3.new(0.065, 0.16, 0.03) },
+            { Vector3.new(0.29, 0.56, chestZ), Vector3.new(0.34, 0.06, 0.03) },
+            { Vector3.new(0.43, 0.48, chestZ), Vector3.new(0.065, 0.16, 0.03) },
+            { Vector3.new(0.29, 0.40, chestZ), Vector3.new(0.34, 0.06, 0.03) },
+        }
+        for i, seg in ipairs(dsSegs) do
+            addRigPart("LogoDS_" .. tostring(i), seg[2], CFrame.new(seg[1]), "Logo", nil, nil, Enum.Material.Neon)
         end
 
-        -- Articulated R15 Legs, Armored Knee Pads & Heavy Combat Boots
-        addLimbSeg("LeftThigh", j.LHip, j.LKnee, 0.62, 0.66, "Base")
-        addLimbSeg("LeftShin", j.LKnee, j.LFoot, 0.54, 0.58, "Base")
-        addRigPart("LeftKneePad", Vector3.new(0.42, 0.28, 0.22), CFrame.new(j.LKnee + Vector3.new(0, 0.02, 0.28)), "Armor", Enum.MeshType.Sphere)
-        addRigPart("LeftBoot", Vector3.new(0.54, 0.32, 0.84), CFrame.new(j.LFoot + Vector3.new(0.02, -0.06, 0.12)) * CFrame.Angles(0, math.rad(-6), 0), "Gear")
+        -- 3D Octagonal Radar-Ticked Pedestal Base directly under the feet (Y = -2.02)
+        local pedY = -2.13
+        local pedR = 1.68
+        local pedSide = 2 * pedR * math.tan(math.pi / 8)
+        for step = 0, 3 do
+            local ang = math.rad(step * 45)
+            addRigPart("OctBase_" .. tostring(step), Vector3.new(pedR * 2, 0.20, pedSide), CFrame.new(0, pedY, 0) * CFrame.Angles(0, ang, 0), "BasePlate")
+            addRigPart("OctSkirt_" .. tostring(step), Vector3.new((pedR + 0.05) * 2, 0.08, pedSide * 1.03), CFrame.new(0, pedY - 0.11, 0) * CFrame.Angles(0, ang, 0), "BaseSkirt")
+        end
+        for step = 0, 7 do
+            local ang = math.rad(step * 45)
+            local rotCF = CFrame.Angles(0, ang, 0)
+            -- Bright octagon perimeter rim strip
+            addRigPart("OctRim_" .. tostring(step), Vector3.new(pedSide * 0.96, 0.025, 0.045), CFrame.new(0, pedY + 0.105, 0) * rotCF * CFrame.new(0, 0, pedR - 0.02), "BaseRim", nil, nil, Enum.Material.Neon)
+            -- Subtle radial radar tick inside rim
+            addRigPart("OctTick_" .. tostring(step), Vector3.new(0.035, 0.02, 0.18), CFrame.new(0, pedY + 0.105, 0) * rotCF * CFrame.new(0, 0, pedR * 0.74), "BaseTick")
+        end
 
-        addLimbSeg("RightThigh", j.RHip, j.RKnee, 0.62, 0.66, "Base")
-        addLimbSeg("RightShin", j.RKnee, j.RFoot, 0.54, 0.58, "Base")
-        addRigPart("RightKneePad", Vector3.new(0.42, 0.28, 0.22), CFrame.new(j.RKnee + Vector3.new(0, 0.02, 0.28)), "Armor", Enum.MeshType.Sphere)
-        addRigPart("RightBoot", Vector3.new(0.54, 0.32, 0.84), CFrame.new(j.RFoot + Vector3.new(-0.02, -0.06, 0.12)) * CFrame.Angles(0, math.rad(4), 0), "Gear")
-
-        -- Exact 3D Skeleton bone segments (projected dynamically onto Stage in applyStageGeometry)
+        -- Exact Skeleton bone segments projected to Stage
         local jointPairs = {
             { j.HeadTop, j.Neck },
             { j.Neck, j.Pelvis },
@@ -9035,7 +9065,7 @@ end
             { j.RKnee, j.RFoot },
         }
         for _, pair in ipairs(jointPairs) do
-            table.insert(DummySkelWorldSegs, { rigCF:PointToWorldSpace(pair[1]), rigCF:PointToWorldSpace(pair[2]) })
+            table.insert(DummySkelWorldSegs, pair)
         end
     end
 
@@ -9234,10 +9264,11 @@ end
             Pedestal.Size = UDim2.fromOffset(118, 22)
         else
             curBoxX, curBoxY, curBoxW, curBoxH = 88, 132, 86, 152
-            CharViewport.Position = UDim2.fromOffset(curBoxX - 18, curBoxY - 12)
-            CharViewport.Size = UDim2.fromOffset(curBoxW + 36, curBoxH + 22)
-            Pedestal.Size = UDim2.fromOffset(112, 22)
+            CharViewport.Position = UDim2.fromOffset(curBoxX - 58, curBoxY - 14)
+            CharViewport.Size = UDim2.fromOffset(curBoxW + 116, curBoxH + 46)
+            Pedestal.Size = UDim2.fromOffset(118, 22)
         end
+        Pedestal.Visible = isCube
         Pedestal.Position = UDim2.fromOffset(curBoxX + curBoxW * 0.5, curBoxY + curBoxH - 2)
         BoxFillFrame.Position = UDim2.fromOffset(curBoxX + 1, curBoxY + 1)
         BoxFillFrame.Size = UDim2.fromOffset(curBoxW - 2, curBoxH - 2)
@@ -9272,8 +9303,8 @@ end
         end
 
         if not isCube then
-            local vpX, vpY = curBoxX - 18, curBoxY - 12
-            local vpW, vpH = curBoxW + 36, curBoxH + 22
+            local vpX, vpY = curBoxX - 58, curBoxY - 14
+            local vpW, vpH = curBoxW + 116, curBoxH + 46
             local halfTan = math.tan(math.rad(DummyCam.FieldOfView * 0.5))
             local aspect = vpW / vpH
             local camCF = DummyCam.CFrame
@@ -9476,33 +9507,22 @@ end
             CharViewport.ImageColor3 = chamsOn and chamsCol or Color3.new(1, 1, 1)
         else
             local outlineGlow = cfg.ChamsOutline or Color3.new(1, 1, 1)
-            local visorAccent = primaryCol:Lerp(Color3.new(1, 1, 1), 0.25)
             for _, rec in ipairs(DummyParts) do
                 local role = rec.Role
-                if chamsOn then
-                    if role == "Armor" then
-                        rec.Part.Color = chamsCol:Lerp(outlineGlow, 0.20)
-                    elseif role == "Gear" then
-                        rec.Part.Color = chamsCol:Lerp(Color3.fromRGB(14, 18, 28), 0.24)
-                    elseif role == "Visor" then
-                        rec.Part.Color = outlineGlow
-                    elseif role == "Skin" then
-                        rec.Part.Color = chamsCol:Lerp(Color3.new(1, 1, 1), 0.08)
-                    else
-                        rec.Part.Color = chamsCol
-                    end
+                if role == "BasePlate" then
+                    rec.Part.Color = Color3.fromRGB(30, 32, 37)
+                elseif role == "BaseSkirt" then
+                    rec.Part.Color = Color3.fromRGB(14, 16, 20)
+                elseif role == "BaseRim" then
+                    rec.Part.Color = chamsOn and outlineGlow or Color3.fromRGB(220, 226, 236)
+                elseif role == "BaseTick" then
+                    rec.Part.Color = Color3.fromRGB(108, 118, 134)
+                elseif role == "Logo" then
+                    rec.Part.Color = chamsOn and outlineGlow or Color3.fromRGB(205, 215, 230)
+                elseif chamsOn then
+                    rec.Part.Color = (role == "Cuff") and chamsCol:Lerp(Color3.fromRGB(12, 14, 18), 0.18) or chamsCol
                 else
-                    if role == "Armor" then
-                        rec.Part.Color = Color3.fromRGB(30, 38, 55)
-                    elseif role == "Gear" then
-                        rec.Part.Color = Color3.fromRGB(20, 25, 36)
-                    elseif role == "Skin" then
-                        rec.Part.Color = Color3.fromRGB(42, 51, 70)
-                    elseif role == "Visor" then
-                        rec.Part.Color = visorAccent
-                    else
-                        rec.Part.Color = Color3.fromRGB(52, 64, 88)
-                    end
+                    rec.Part.Color = (role == "Cuff") and Color3.fromRGB(22, 25, 31) or Color3.fromRGB(14, 16, 20)
                 end
             end
             CharViewport.ImageColor3 = Color3.new(1, 1, 1)

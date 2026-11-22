@@ -1582,9 +1582,11 @@ export type TargetResult = {
     MaxHealth: number,
 }
 
-function Targeting.GetEffectiveFOVRadius(): number
-    local base = Config.Targeting.FOV
-    if not Config.Targeting.DynamicFOV then
+function Targeting.GetEffectiveFOVRadius(kind: ("Aimbot" | "Silent")?): number
+    local useAimbot = (kind == "Aimbot")
+    local base = useAimbot and Config.Aimbot.FOVRadius or Config.Targeting.FOV
+    local isDynamic = useAimbot and Config.Aimbot.FOVDynamic or Config.Targeting.DynamicFOV
+    if not isDynamic then
         return base
     end
     local cam = Workspace.CurrentCamera
@@ -1610,7 +1612,7 @@ function Targeting.ToggleNearestFriend(): (Player?, boolean)
         return nil, false
     end
     local aim2D = Targeting.GetAimOrigin2D()
-    local maxPx = math.max(Targeting.GetEffectiveFOVRadius(), 220)
+    local maxPx = math.max(Targeting.GetEffectiveFOVRadius("Silent"), Targeting.GetEffectiveFOVRadius("Aimbot"), 220)
     local bestPlayer: Player? = nil
     local bestDist = maxPx
 
@@ -1646,6 +1648,7 @@ function Targeting.FindBestTarget(opts: {
     IgnoreDowned: boolean,
     TargetAI: boolean,
     UseFOV: boolean,
+    FOVKind: ("Aimbot" | "Silent")?,
     MaxDistance: number,
     RayOrigin: Vector3?,
     AimPoint: string?,
@@ -1663,7 +1666,7 @@ function Targeting.FindBestTarget(opts: {
     end
 
     local aim2D = Targeting.GetAimOrigin2D()
-    local fovRadius = opts.UseFOV and Targeting.GetEffectiveFOVRadius() or math.huge
+    local fovRadius = opts.UseFOV and Targeting.GetEffectiveFOVRadius(opts.FOVKind) or math.huge
     local camPos = cam.CFrame.Position
     local visOrigin = opts.RayOrigin or camPos
 
@@ -2050,6 +2053,7 @@ local function findSilentAimTarget(shotOrigin: Vector3, allowRandom: boolean?): 
         AllowRandom = allowRandom == true,
         Priority = Config.SilentAim.Priority,
         MultiPoint = Config.SilentAim.MultiPoint,
+        FOVKind = "Silent",
     })
 end
 Combat._FindSilentTarget = findSilentAimTarget
@@ -2222,6 +2226,7 @@ local function stepAimbot(dt: number)
         IgnoreDowned = Config.Aimbot.IgnoreDowned,
         TargetAI = Config.Aimbot.TargetAI,
         UseFOV = true,
+        FOVKind = "Aimbot",
         MaxDistance = Config.Aimbot.MaxDistance,
     })
 
@@ -4052,6 +4057,8 @@ local FOVCircleOutline = newDraw("Circle", { Thickness = 3.0, NumSides = 72, Fil
 local FOVCircle = newDraw("Circle", { Thickness = 1.9, NumSides = 72, Filled = false, Transparency = drawTrans(0.95), ZIndex = 10, Visible = false })
 Combat._SilentLine = newDraw("Line", { Thickness = 1.0, Transparency = drawTrans(0.75), ZIndex = 9, Visible = false })
 Combat._SilentDot = newDraw("Circle", { Filled = true, Radius = 2.6, NumSides = 12, Transparency = drawTrans(0.95), ZIndex = 10, Visible = false })
+Combat._SilentFOVOutline = newDraw("Circle", { Thickness = 2.6, NumSides = 72, Filled = false, Color = OUTLINE_DARK, Transparency = drawTrans(0.45), ZIndex = 8, Visible = false })
+Combat._SilentFOV = newDraw("Circle", { Thickness = 1.4, NumSides = 72, Filled = false, Color = Color3.fromRGB(168, 85, 247), Transparency = drawTrans(0.85), ZIndex = 9, Visible = false })
 
 ;(function()
     local RADAR_MAX_BLIPS = 44
@@ -4408,6 +4415,8 @@ function Misc._HideAllVisualsNow()
     end
     if FOVCircleOutline then FOVCircleOutline.Visible = false end
     if FOVCircle then FOVCircle.Visible = false end
+    if Combat._SilentFOVOutline then Combat._SilentFOVOutline.Visible = false end
+    if Combat._SilentFOV then Combat._SilentFOV.Visible = false end
     if Combat._SilentLine then Combat._SilentLine.Visible = false end
     if Combat._SilentDot then Combat._SilentDot.Visible = false end
     if World.HideRadar then World.HideRadar() end
@@ -5242,6 +5251,12 @@ Session.OnStop(function()
     end
     if Combat._SilentDot then
         pcall(function() Combat._SilentDot:Remove() end)
+    end
+    if Combat._SilentFOVOutline then
+        pcall(function() Combat._SilentFOVOutline:Remove() end)
+    end
+    if Combat._SilentFOV then
+        pcall(function() Combat._SilentFOV:Remove() end)
     end
     if World.DestroyRadar then
         World.DestroyRadar()
@@ -7536,17 +7551,11 @@ do
 
     local secFov = UI.AddSection(CombatTab, "Left", "FOV Circle")
     UI.AddToggle(secFov, "Show FOV Circle", function() return Config.Aimbot.ShowFOV end, function(v) Config.Aimbot.ShowFOV = v end)
-    UI.AddSlider(secFov, "FOV Radius", 25, 500, 5, "px", function() return Config.Targeting.FOV end, function(v)
-        if v ~= Config.Targeting.FOV then
-            Config.Targeting.FOV = v
-            Config.Aimbot.FOVRadius = v
-            UI.RefreshAll()
-        end
+    UI.AddSlider(secFov, "FOV Radius", 25, 500, 5, "px", function() return Config.Aimbot.FOVRadius end, function(v)
+        Config.Aimbot.FOVRadius = v
     end)
-    UI.AddToggle(secFov, "Scale With Zoom", function() return Config.Targeting.DynamicFOV end, function(v)
-        Config.Targeting.DynamicFOV = v
+    UI.AddToggle(secFov, "Scale With Zoom", function() return Config.Aimbot.FOVDynamic end, function(v)
         Config.Aimbot.FOVDynamic = v
-        UI.RefreshAll()
     end)
     UI.AddToggle(secFov, "Filled Circle", function() return Config.Aimbot.FOVFilled end, function(v) Config.Aimbot.FOVFilled = v end)
     UI.AddColorPicker(secFov, "FOV Color", function() return Config.Aimbot.FOVColor end, function(c) Config.Aimbot.FOVColor = c end)
@@ -7597,16 +7606,10 @@ do
 
     local secTargeting = UI.AddSection(CombatTab, "Right", "Targeting")
     UI.AddSlider(secTargeting, "FOV", 25, 500, 5, "", function() return Config.Targeting.FOV end, function(v)
-        if v ~= Config.Targeting.FOV then
-            Config.Targeting.FOV = v
-            Config.Aimbot.FOVRadius = v
-            UI.RefreshAll()
-        end
+        Config.Targeting.FOV = v
     end)
     UI.AddToggle(secTargeting, "Dynamic FOV", function() return Config.Targeting.DynamicFOV end, function(v)
         Config.Targeting.DynamicFOV = v
-        Config.Aimbot.FOVDynamic = v
-        UI.RefreshAll()
     end)
     UI.AddDropdown(secTargeting, "Aim Point", { "Selected", "Closest", "Random" }, function() return Config.Targeting.AimPoint end, function(v)
         Config.Targeting.AimPoint = v
@@ -7882,11 +7885,6 @@ do
         UI.AddSlider(p, "Max Distance", 50, 2000, 50, "m", function() return Config.QuestESP.MaxDistance end, function(v) Config.QuestESP.MaxDistance = v end)
         UI.AddColorPicker(p, "Quest Color", function() return Config.QuestESP.Color end, function(c) Config.QuestESP.Color = c end)
     end
-
-    local secExit = UI.AddSection(VisualsTab, "Left", "Extractions")
-    UI.AddToggle(secExit, "Extraction Locations ESP", function() return Config.ExitESP.Enabled end, function(v) Config.ExitESP.Enabled = v end)
-    UI.AddSlider(secExit, "Max Distance", 100, 3000, 50, "m", function() return Config.ExitESP.MaxDistance end, function(v) Config.ExitESP.MaxDistance = v end)
-    UI.AddColorPicker(secExit, "Extraction Color", function() return Config.ExitESP.Color end, function(c) Config.ExitESP.Color = c end)
 
     local secWorld = UI.AddSection(VisualsTab, "Left", "World & Vision")
     UI.AddToggle(secWorld, "Fullbright", function() return Config.World.Fullbright end, function(v) Config.World.Fullbright = v end)
@@ -9329,11 +9327,14 @@ Session.Bind(RunService.RenderStepped, function(dt: number)
         return
     end
 
-    -- FOV Circle
+    -- Aimbot & Silent Aim Independent FOV Circles
+    local fovPos = Targeting.GetAimOrigin2D()
+    local showAimFov = Config.Aimbot.ShowFOV and not panicDisableCombat and Config.Aimbot.Enabled
+    local showSilentFov = Config.Aimbot.ShowFOV and not panicDisableCombat and Config.SilentAim.Enabled and Config.SilentAim.UseFOV
+
     if FOVCircle then
-        if Config.Aimbot.ShowFOV and not panicDisableCombat and (Config.Aimbot.Enabled or Config.SilentAim.Enabled) then
-            local fovPos = Targeting.GetAimOrigin2D()
-            local fovRad = Targeting.GetEffectiveFOVRadius()
+        if showAimFov then
+            local fovRad = Targeting.GetEffectiveFOVRadius("Aimbot")
             if FOVCircleOutline then
                 FOVCircleOutline.Position = fovPos
                 FOVCircleOutline.Radius = fovRad
@@ -9350,6 +9351,26 @@ Session.Bind(RunService.RenderStepped, function(dt: number)
                 FOVCircleOutline.Visible = false
             end
             FOVCircle.Visible = false
+        end
+    end
+
+    if Combat._SilentFOV then
+        if showSilentFov then
+            local sRad = Targeting.GetEffectiveFOVRadius("Silent")
+            if Combat._SilentFOVOutline then
+                Combat._SilentFOVOutline.Position = fovPos
+                Combat._SilentFOVOutline.Radius = sRad
+                Combat._SilentFOVOutline.Visible = true
+            end
+            Combat._SilentFOV.Position = fovPos
+            Combat._SilentFOV.Radius = sRad
+            Combat._SilentFOV.Color = showAimFov and Color3.fromRGB(168, 85, 247) or Config.Aimbot.FOVColor
+            Combat._SilentFOV.Visible = true
+        else
+            if Combat._SilentFOVOutline then
+                Combat._SilentFOVOutline.Visible = false
+            end
+            Combat._SilentFOV.Visible = false
         end
     end
 

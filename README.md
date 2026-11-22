@@ -38,4 +38,5 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/jakrjone123/DeltaSuit
   - **Detect**: detección automática de `Content Creator` (`[CC]`), `Tester` (`[TESTER]`), `Moderator` (`[MOD]`, rango grupo Project Delta + `ChatTags`) y `Cheater` (`[CHEATER]` por `TotalFlags` / `HSR` / `KDR`), con popover independiente para `Notify Alert`, `ESP Badge` y umbrales.
   - **Vault Sort**: botón `Sort By Value` para valorar `VaultStorage.Inventory` (incluidos rublos, objetos anidados y llaves) y ordenar ranuras por valor descendente.
 - **Settings**
-  - Tecla de menú personalizable (`RightControl` por defecto), Watermark, Target Info HUD, notificaciones, restauración completa del entorno/armas/puertas/efectos y descarga limpia (`Unload Delta Suite`).
+  - **Config Manager**: guardado, carga, listado dinámico de perfiles en disco (`DeltaSuite/configs/*.json` con respaldo en memoria), `Auto Load Selected` (`DeltaSuite/autoload.txt`) y eliminación segura (serializando colores `Color3`, keybinds `EnumItem`, layouts y filtros).
+  - Interfaz táctica translúcida con control deslizante `Menu Transparency` (`0..45%`), tecla de menú personalizable (`RightControl`), Watermark, Target Info HUD, notificaciones, restauración completa del entorno/armas/puertas/efectos y descarga limpia (`Unload Delta Suite`).

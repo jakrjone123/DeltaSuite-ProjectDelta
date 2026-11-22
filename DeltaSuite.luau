@@ -207,14 +207,17 @@ local function createDefaultConfig()
             Enabled = false,
             Key = Enum.KeyCode.Unknown :: BindValue,
             Mode = "Always", -- Always | Hold | Toggle
+            Priority = "Crosshair", -- Crosshair | Closest Dist | Lowest HP
             HitPart = "Head",
             HitChance = 100,
             TeamCheck = true,
             VisibleCheck = true,
             IgnoreDowned = true,
             TargetAI = false,
+            MultiPoint = true,
             Prediction = true,
             DropComp = true,
+            TargetLine = true,
             UseFOV = true,
         },
         Targeting = {
@@ -376,6 +379,44 @@ local function createDefaultConfig()
             CustomFOV = false,
             FOVValue = 90,
         },
+        Misc = {
+            FastTrade = false,
+            PanicMode = false,
+            PanicKey = Enum.KeyCode.End :: BindValue,
+            PanicHideVisuals = true,
+            PanicDisableCombat = true,
+            PanicHideMenu = true,
+            PassDoor = false,
+            PassDoorKey = Enum.KeyCode.Unknown :: BindValue,
+            PassDoorMode = "Always", -- Always | Hold | Toggle
+            PassDoorRange = 18,
+            PassDoorAutoOpen = true,
+            ScreenEffects = false,
+            ReportNotify = true,
+            ReportAlertSelf = true,
+            ReportAlertServer = true,
+            JoinNotify = false,
+            JoinAlertFlaggedOnly = false,
+            JoinLeaveAlerts = false,
+            JoinShowAge = true,
+        },
+        Detect = {
+            ContentCreator = false,
+            ContentCreatorNotify = true,
+            ContentCreatorBadge = true,
+            Tester = false,
+            TesterNotify = true,
+            TesterBadge = true,
+            Moderator = true,
+            ModeratorNotify = true,
+            ModeratorBadge = true,
+            Cheater = false,
+            CheaterNotify = true,
+            CheaterBadge = true,
+            CheaterMinFlags = 25,
+            CheaterMinHSR = 75,
+            CheaterMinKDR = 5.0,
+        },
         Settings = {
             MenuKey = Enum.KeyCode.RightControl :: BindValue,
             Watermark = true,
@@ -494,6 +535,37 @@ if ItemsListFolder then
             }
         end
     end
+end
+
+function Delta.GetItemValue(item: Instance, includeNested: boolean?): (number, number, string)
+    local info = ItemsPriceCache[item.Name]
+    local props = item:FindFirstChild("ItemProperties")
+    local unitPrice = (info and info.Price)
+        or tonumber(item:GetAttribute("Price"))
+        or (props and tonumber(props:GetAttribute("Price")))
+        or 0
+    local amount = tonumber(item:GetAttribute("Amount"))
+        or (props and tonumber(props:GetAttribute("Amount")))
+        or 1
+    if unitPrice == 0 and (item.Name == "Rubles" or (info and info.Name == "Rubles")) then
+        unitPrice = 1
+    elseif unitPrice == 0 and info and (info.Type == "Key" or info.Type == "Keycard") then
+        unitPrice = 5000
+    end
+    local total = unitPrice * math.max(amount, 1)
+    if includeNested then
+        for _, folderName in ipairs({ "Inventory", "Attachments", "Bullets" }) do
+            local subFolder = item:FindFirstChild(folderName)
+            if subFolder then
+                for _, sub in ipairs(subFolder:GetChildren()) do
+                    local subVal = Delta.GetItemValue(sub, true)
+                    total += subVal
+                end
+            end
+        end
+    end
+    local dispName = (info and info.Name) or item.Name
+    return total, unitPrice, dispName
 end
 
 function Delta.GetRSPlayer(player: Player): Instance?
@@ -799,20 +871,21 @@ end
 
 local OriginalAmmoSpread: { [Instance]: any } = {}
 
-function Delta.GetBallisticsForAmmo(ammoName: string?): ({ Velocity: number, Drop: number }, Instance?)
-    local defaultVel, defaultDrop = 2200, 4.6
+function Delta.GetBallisticsForAmmo(ammoName: string?): ({ Velocity: number, Drop: number, Drag: number }, Instance?)
+    local defaultVel, defaultDrop, defaultDrag = 2200, 4.6, 0.013
     if ammoName and ammoName ~= "" and AmmoTypesFolder then
         local ammoInst = AmmoTypesFolder:FindFirstChild(ammoName)
         if ammoInst then
             local vel = tonumber(ammoInst:GetAttribute("MuzzleVelocity")) or defaultVel
             local drop = tonumber(ammoInst:GetAttribute("ProjectileDrop")) or defaultDrop
-            return { Velocity = vel, Drop = drop }, ammoInst
+            local drag = tonumber(ammoInst:GetAttribute("Drag")) or defaultDrag
+            return { Velocity = vel, Drop = drop, Drag = drag }, ammoInst
         end
     end
-    return { Velocity = defaultVel, Drop = defaultDrop }, nil
+    return { Velocity = defaultVel, Drop = defaultDrop, Drag = defaultDrag }, nil
 end
 
-function Delta.GetLocalBallistics(): { Velocity: number, Drop: number }
+function Delta.GetLocalBallistics(): { Velocity: number, Drop: number, Drag: number }
     local char = LocalPlayer.Character
     local rsPlayer = Delta.GetRSPlayer(LocalPlayer)
     local gv = rsPlayer and rsPlayer:FindFirstChild("Status") and rsPlayer.Status:FindFirstChild("GameplayVariables")
@@ -831,7 +904,7 @@ function Delta.GetLocalBallistics(): { Velocity: number, Drop: number }
         end
     end
     if not tool then
-        return { Velocity = 2200, Drop = 4.6 }
+        return { Velocity = 2200, Drop = 4.6, Drag = 0.013 }
     end
 
     local ammoName: string? = nil
@@ -1018,7 +1091,8 @@ function Delta.IsPartVisible(
     targetPart: BasePart,
     originPos: Vector3,
     wallbang: WallbangConfig?,
-    rayBudget: { Remaining: number }?
+    rayBudget: { Remaining: number }?,
+    overrideWorldPos: Vector3?
 ): boolean
     local cam = Workspace.CurrentCamera
     local ignoreList: { Instance } = {}
@@ -1045,7 +1119,7 @@ function Delta.IsPartVisible(
     revParams.IgnoreWater = true
 
     local currentOrigin = originPos
-    local destination = targetPart.Position
+    local destination = overrideWorldPos or targetPart.Position
     local wallsUsed = 0
     local totalThickness = 0
 
@@ -1120,31 +1194,80 @@ function Delta.IsPartVisible(
     return false
 end
 
+function Delta.FindVisiblePartPoint(
+    targetModel: Model,
+    targetPart: BasePart,
+    originPos: Vector3,
+    wallbang: WallbangConfig?,
+    rayBudget: { Remaining: number }?,
+    multiPoint: boolean?
+): Vector3?
+    if Delta.IsPartVisible(targetModel, targetPart, originPos, wallbang, rayBudget, nil) then
+        return targetPart.Position
+    end
+    if not multiPoint or (rayBudget and rayBudget.Remaining <= 0) then
+        return nil
+    end
+
+    local sz = targetPart.Size
+    local cf = targetPart.CFrame
+    local lname = targetPart.Name:lower()
+    local offsets: { Vector3 }
+    if lname:find("head") or lname:find("face") then
+        offsets = {
+            Vector3.new(0, 0.36 * sz.Y, 0),
+            Vector3.new(-0.34 * sz.X, 0.14 * sz.Y, 0),
+            Vector3.new(0.34 * sz.X, 0.14 * sz.Y, 0),
+            Vector3.new(0, -0.25 * sz.Y, 0),
+        }
+    else
+        offsets = {
+            Vector3.new(-0.34 * sz.X, 0.18 * sz.Y, 0),
+            Vector3.new(0.34 * sz.X, 0.18 * sz.Y, 0),
+            Vector3.new(0, 0.34 * sz.Y, 0),
+        }
+    end
+
+    for _, off in ipairs(offsets) do
+        if rayBudget and rayBudget.Remaining <= 0 then
+            break
+        end
+        local probeWorld = cf:PointToWorldSpace(off)
+        if Delta.IsPartVisible(targetModel, targetPart, originPos, wallbang, rayBudget, probeWorld) then
+            return probeWorld
+        end
+    end
+    return nil
+end
+
 function Delta.PredictAimPosition(
     originPos: Vector3,
     targetPart: BasePart,
     useLead: boolean,
     useDrop: boolean,
-    ballisticsOverride: { Velocity: number, Drop: number }?
+    ballisticsOverride: { Velocity: number, Drop: number, Drag: number? }?,
+    overrideWorldPos: Vector3?
 ): Vector3
-    local pos = targetPart.Position
+    local pos = overrideWorldPos or targetPart.Position
     if not useLead and not useDrop then
         return pos
     end
     local ballistics = ballisticsOverride or Delta.GetLocalBallistics()
     local speed = math.max(ballistics.Velocity, 100)
+    local drag = math.max(ballistics.Drag or 0.013, 0)
     local vel = useLead and targetPart.AssemblyLinearVelocity or Vector3.zero
     if vel.Magnitude < 0.5 then
         vel = Vector3.zero
     end
-    -- Project Delta Bullet.onStep applies fixed Vector3(0, -70, 0) * dt without drag
+    -- Project Delta Bullet.onStep gravity (-70 * ProjectileDrop / 4.6) + exponential drag velocity decay
     local gravity = useDrop and (70 * (ballistics.Drop / 4.6)) or 0
 
     local t = (pos - originPos).Magnitude / speed
     local aimPos = pos
-    for _ = 1, 3 do
+    for _ = 1, 4 do
+        local avgSpeed = math.max(speed * math.exp(-0.5 * drag * t * 12), 100)
         local future = pos + vel * t + Vector3.new(0, 0.5 * gravity * t * t, 0)
-        t = (future - originPos).Magnitude / speed
+        t = (future - originPos).Magnitude / avgSpeed
         aimPos = future
     end
 
@@ -1244,22 +1367,11 @@ local function refreshContainerTag(tag: TagEntry)
     if inv then
         for _, item in ipairs(inv:GetChildren()) do
             count += 1
-            local info = ItemsPriceCache[item.Name]
-            local props = item:FindFirstChild("ItemProperties")
-            local unitPrice = (info and info.Price)
-                or tonumber(item:GetAttribute("Price"))
-                or (props and tonumber(props:GetAttribute("Price")))
-                or 0
-            local amount = tonumber(item:GetAttribute("Amount"))
-                or (props and tonumber(props:GetAttribute("Amount")))
-                or 1
-            if unitPrice == 0 and info and (info.Type == "Key" or info.Type == "Keycard") then
-                unitPrice = 5000
-            end
-            totalValue += unitPrice * math.max(amount, 1)
+            local itemTotal, unitPrice, dispName = Delta.GetItemValue(item, false)
+            totalValue += itemTotal
             if unitPrice > maxPrice then
                 maxPrice = unitPrice
-                topItemName = (info and info.Name) or item.Name
+                topItemName = dispName
             end
         end
     end
@@ -1352,6 +1464,7 @@ export type TargetResult = {
     Player: Player?,
     IsAI: boolean,
     Part: BasePart,
+    AimPointWorld: Vector3,
     ScreenPos: Vector2,
     ScreenDist: number,
     WorldDist: number,
@@ -1431,6 +1544,8 @@ function Targeting.FindBestTarget(opts: {
     Wallbang: WallbangConfig?,
     RaycastBudget: number?,
     AllowRandom: boolean?,
+    Priority: string?,
+    MultiPoint: boolean?,
 }): TargetResult?
     local cam = Workspace.CurrentCamera
     if not cam then
@@ -1518,7 +1633,15 @@ function Targeting.FindBestTarget(opts: {
         return nil
     end
 
+    local prio = opts.Priority or "Crosshair"
     table.sort(candidates, function(a, b)
+        if prio == "Closest Dist" then
+            return a.WorldDist < b.WorldDist
+        elseif prio == "Lowest HP" then
+            if math.abs(a.Health - b.Health) > 1 then
+                return a.Health < b.Health
+            end
+        end
         return a.ScreenDist < b.ScreenDist
     end)
 
@@ -1530,6 +1653,7 @@ function Targeting.FindBestTarget(opts: {
                 Player = cand.Entry.Player,
                 IsAI = cand.Entry.IsAI,
                 Part = cand.PrimaryPart,
+                AimPointWorld = cand.PrimaryPart.Position,
                 ScreenPos = cand.ScreenPos,
                 ScreenDist = cand.ScreenDist,
                 WorldDist = cand.WorldDist,
@@ -1545,8 +1669,9 @@ function Targeting.FindBestTarget(opts: {
             if idx > 1 and not opts.VisibleFallback and opts.AimPoint ~= "Random" then
                 break
             end
-            if Delta.IsPartVisible(cand.Model, part, visOrigin, opts.Wallbang, budget) then
-                local sp, onScr = cam:WorldToViewportPoint(part.Position)
+            local hitWorld = Delta.FindVisiblePartPoint(cand.Model, part, visOrigin, opts.Wallbang, budget, opts.MultiPoint == true)
+            if hitWorld then
+                local sp, onScr = cam:WorldToViewportPoint(hitWorld)
                 local p2d = onScr and Vector2.new(sp.X, sp.Y) or cand.ScreenPos
                 local sd = onScr and (p2d - aim2D).Magnitude or cand.ScreenDist
                 if not opts.UseFOV or sd <= fovRadius then
@@ -1555,9 +1680,10 @@ function Targeting.FindBestTarget(opts: {
                         Player = cand.Entry.Player,
                         IsAI = cand.Entry.IsAI,
                         Part = part,
+                        AimPointWorld = hitWorld,
                         ScreenPos = p2d,
                         ScreenDist = sd,
-                        WorldDist = (part.Position - camPos).Magnitude,
+                        WorldDist = (hitWorld - camPos).Magnitude,
                         Health = cand.Health,
                         MaxHealth = cand.MaxHealth,
                     }
@@ -1812,8 +1938,11 @@ local function findSilentAimTarget(shotOrigin: Vector3, allowRandom: boolean?): 
         },
         RaycastBudget = Config.Targeting.RaycastBudget,
         AllowRandom = allowRandom == true,
+        Priority = Config.SilentAim.Priority,
+        MultiPoint = Config.SilentAim.MultiPoint,
     })
 end
+Combat._FindSilentTarget = findSilentAimTarget
 
 do
     local modulesFolder = ReplicatedStorage:FindFirstChild("Modules")
@@ -1823,13 +1952,15 @@ do
 
     if okBullet and type(BulletMod) == "table" and type(BulletMod.CreateBullet) == "function" then
         local origCreateBullet = BulletMod.CreateBullet
+        local hookedCreateBullet: any = nil
 
         local function wrappedCreateBullet(...)
             local args = table.pack(...)
             local restoredParts: { { Part: BasePart, PrevCF: CFrame } } = {}
-            local restoredAmmo: { Inst: Instance, PrevDev: any }? = nil
+            local restoredSpreads: { { Inst: Instance, PrevVal: any } } = {}
 
-            if Session.IsAlive() and isModeActive("SilentAim", Config.SilentAim.Enabled, Config.SilentAim.Mode, Config.SilentAim.Key) then
+            local panicBlock = Config.Misc.PanicMode and Config.Misc.PanicDisableCombat
+            if not panicBlock and Session.IsAlive() and isModeActive("SilentAim", Config.SilentAim.Enabled, Config.SilentAim.Mode, Config.SilentAim.Key) then
                 local chance = math.clamp(Config.SilentAim.HitChance, 0, 100)
                 if chance >= 100 or SilentRng:NextInteger(1, 100) <= chance then
                     local shotOrigin = Delta.GetShotOrigin()
@@ -1842,8 +1973,14 @@ do
                             ammoBallistics = Delta.GetLocalBallistics()
                         end
 
-                        local usePred = Config.SilentAim.Prediction
-                        local aimPos = Delta.PredictAimPosition(shotOrigin, target.Part, usePred, usePred, ammoBallistics)
+                        local aimPos = Delta.PredictAimPosition(
+                            shotOrigin,
+                            target.Part,
+                            Config.SilentAim.Prediction,
+                            Config.SilentAim.DropComp,
+                            ammoBallistics,
+                            target.AimPointWorld
+                        )
                         local aimVec = aimPos - shotOrigin
 
                         if aimVec.Magnitude > 1e-4 then
@@ -1851,17 +1988,43 @@ do
                             local cam = Workspace.CurrentCamera
                             local camLook = cam and cam.CFrame.LookVector or aimUnit
 
-                            -- Prevent fireBullet random cone dispersion from ruining guaranteed Silent Aim shots
-                            if ammoInst and not Config.WeaponMods.NoSpread then
-                                local prevDev = ammoInst:GetAttribute("AccuracyDeviation")
-                                if type(prevDev) == "number" and prevDev > 0 then
-                                    restoredAmmo = { Inst = ammoInst, PrevDev = prevDev }
-                                    ammoInst:SetAttribute("AccuracyDeviation", 0)
+                            -- Prevent fireBullet random cone dispersion across ammo, weapon tool, and attachments
+                            if not Config.WeaponMods.NoSpread then
+                                local function zeroDev(inst: Instance?)
+                                    if inst then
+                                        local prev = inst:GetAttribute("AccuracyDeviation")
+                                        if type(prev) == "number" and prev > 0 then
+                                            table.insert(restoredSpreads, { Inst = inst, PrevVal = prev })
+                                            inst:SetAttribute("AccuracyDeviation", 0)
+                                        end
+                                    end
+                                end
+                                zeroDev(ammoInst)
+                                local rsPlr = Delta.GetRSPlayer(LocalPlayer)
+                                local gv = rsPlr and rsPlr:FindFirstChild("Status") and rsPlr.Status:FindFirstChild("GameplayVariables")
+                                local eq = gv and gv:FindFirstChild("EquippedTool")
+                                local eqTool = (eq and eq:IsA("ObjectValue")) and eq.Value or nil
+                                if not eqTool and LocalPlayer.Character then
+                                    local holding = LocalPlayer.Character:FindFirstChild("Holding")
+                                    eqTool = (holding and holding:IsA("ObjectValue")) and holding.Value or nil
+                                end
+                                zeroDev(eqTool)
+                                local atts = eqTool and eqTool:FindFirstChild("Attachments")
+                                if atts then
+                                    for _, att in ipairs(atts:GetChildren()) do
+                                        zeroDev(att)
+                                    end
                                 end
                             end
 
-                            -- Redirect arg #5 (Project Delta CreateBullet AimPart) and fallback aim/muzzle CFrames along exact shotOrigin->aimPos ray
+                            -- Redirect arg #5 (AimPart) & muzzle/CFrame args with true convergence on aimPos
                             local touched: { [BasePart]: boolean } = {}
+                            local function lookTarget(fromPos: Vector3): Vector3
+                                if (aimPos - fromPos).Magnitude > 1.5 then
+                                    return aimPos
+                                end
+                                return fromPos + aimUnit
+                            end
                             for i = 1, args.n do
                                 local arg = args[i]
                                 if typeof(arg) == "Instance" and arg:IsA("BasePart") and not touched[arg] then
@@ -1869,11 +2032,11 @@ do
                                     if i == 5 or lname:find("aim") or lname:find("muzzle") or lname:find("barrel") or lname:find("fire") then
                                         touched[arg] = true
                                         table.insert(restoredParts, { Part = arg, PrevCF = arg.CFrame })
-                                        arg.CFrame = CFrame.lookAt(arg.Position, arg.Position + aimUnit)
+                                        arg.CFrame = CFrame.lookAt(arg.Position, lookTarget(arg.Position))
                                     end
                                 elseif typeof(arg) == "CFrame" then
                                     if i == 5 or arg.LookVector:Dot(camLook) > 0.25 then
-                                        args[i] = CFrame.lookAt(arg.Position, arg.Position + aimUnit)
+                                        args[i] = CFrame.lookAt(arg.Position, lookTarget(arg.Position))
                                     end
                                 end
                             end
@@ -1884,14 +2047,19 @@ do
                 end
             end
 
-            local results = table.pack(pcall(origCreateBullet, table.unpack(args, 1, args.n)))
+            local targetFn = hookedCreateBullet or origCreateBullet
+            local results = table.pack(pcall(targetFn, table.unpack(args, 1, args.n)))
             for _, rec in ipairs(restoredParts) do
                 if rec.Part.Parent then
                     rec.Part.CFrame = rec.PrevCF
                 end
             end
-            if restoredAmmo and restoredAmmo.Inst.Parent and not Config.WeaponMods.NoSpread then
-                restoredAmmo.Inst:SetAttribute("AccuracyDeviation", restoredAmmo.PrevDev)
+            if not Config.WeaponMods.NoSpread then
+                for _, rec in ipairs(restoredSpreads) do
+                    if rec.Inst.Parent then
+                        rec.Inst:SetAttribute("AccuracyDeviation", rec.PrevVal)
+                    end
+                end
             end
             if not results[1] then
                 error(results[2])
@@ -1899,9 +2067,17 @@ do
             return table.unpack(results, 2, results.n)
         end
 
-        BulletMod.CreateBullet = wrappedCreateBullet
+        if type(hookfunction) == "function" then
+            hookedCreateBullet = hookfunction(origCreateBullet, wrappedCreateBullet)
+        else
+            BulletMod.CreateBullet = wrappedCreateBullet
+        end
         Session.OnStop(function()
-            if BulletMod.CreateBullet == wrappedCreateBullet then
+            if type(restorefunction) == "function" then
+                pcall(restorefunction, origCreateBullet)
+            elseif type(hookfunction) == "function" and hookedCreateBullet then
+                pcall(hookfunction, origCreateBullet, hookedCreateBullet)
+            elseif BulletMod.CreateBullet == wrappedCreateBullet then
                 BulletMod.CreateBullet = origCreateBullet
             end
         end)
@@ -1913,6 +2089,11 @@ local mouseAccumX, mouseAccumY = 0, 0
 local lastTriggerShotAt = 0
 
 local function stepAimbot(dt: number)
+    if Config.Misc.PanicMode and Config.Misc.PanicDisableCombat then
+        mouseAccumX, mouseAccumY = 0, 0
+        ActiveLockedTarget = nil
+        return
+    end
     local active = isModeActive("Aimbot", Config.Aimbot.Enabled, Config.Aimbot.Mode, Config.Aimbot.Key)
     if not active then
         mouseAccumX, mouseAccumY = 0, 0
@@ -1945,7 +2126,7 @@ local function stepAimbot(dt: number)
         return
     end
 
-    local aimWorld = Delta.PredictAimPosition(cam.CFrame.Position, target.Part, Config.Aimbot.Prediction, Config.Aimbot.DropComp)
+    local aimWorld = Delta.PredictAimPosition(cam.CFrame.Position, target.Part, Config.Aimbot.Prediction, Config.Aimbot.DropComp, nil, target.AimPointWorld)
 
     if Config.Aimbot.Method == "Mouse" and type(mousemoverel) == "function" then
         local sp, onScreen = cam:WorldToViewportPoint(aimWorld)
@@ -1988,6 +2169,9 @@ end
 
 -- 6E. TriggerBot Step
 local function stepTriggerBot()
+    if Config.Misc.PanicMode and Config.Misc.PanicDisableCombat then
+        return
+    end
     if not isModeActive("TriggerBot", Config.TriggerBot.Enabled, Config.TriggerBot.Mode, Config.TriggerBot.Key) then
         return
     end
@@ -2110,8 +2294,9 @@ local AppliedNoFog = false
 local AppliedNoBlur = false
 local AppliedFOV = false
 
-function World.Step()
-    if Config.World.Fullbright then
+function World.Step(suspend: boolean?)
+    local paused = (suspend == true)
+    if not paused and Config.World.Fullbright then
         AppliedFullbright = true
         Lighting.Brightness = Config.World.Brightness
         Lighting.ClockTime = Config.World.ClockTime
@@ -2133,7 +2318,7 @@ function World.Step()
         end
     end
 
-    if Config.World.NoFog then
+    if not paused and Config.World.NoFog then
         AppliedNoFog = true
         Lighting.FogEnd = 1000000
         if AtmosphereInst then
@@ -2151,7 +2336,7 @@ function World.Step()
         end
     end
 
-    if Config.World.NoBlurDOF then
+    if not paused and Config.World.NoBlurDOF then
         AppliedNoBlur = true
         for eff in pairs(EffectEnabledBackup) do
             if eff.Parent then
@@ -2169,7 +2354,7 @@ function World.Step()
 
     local cam = Workspace.CurrentCamera
     if cam then
-        if Config.World.CustomFOV then
+        if not paused and Config.World.CustomFOV then
             AppliedFOV = true
             cam.FieldOfView = Config.World.FOVValue
         elseif AppliedFOV then
@@ -2184,8 +2369,10 @@ function World.RestoreAll()
     Config.World.NoFog = false
     Config.World.NoBlurDOF = false
     Config.World.CustomFOV = false
-    World.Step()
+    World.Step(false)
 end
+
+local Misc: { [string]: any } = {}
 
 -- ============================================================================
 -- 8. VISUALS & ESP RENDERING (DRAWING API + POOLED CHAMS)
@@ -2861,12 +3048,22 @@ local function renderActorESP(entry: ActorEntry, cam: Camera, vp: Vector2)
     local hpRatio = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
 
     local values: { [string]: { Text: string, Color: Color3, Size: number } } = {}
+    local detectBadge: string? = nil
+    local detectColor: Color3? = nil
+    if not isAI and entry.Player and Misc.GetDetectTag then
+        detectBadge, detectColor = Misc.GetDetectTag(entry.Player)
+    end
+    if detectColor then
+        primaryColor = detectColor
+    end
     if cfg.Name then
         local title = (not isAI and entry.Player) and entry.Player.DisplayName or model.Name
         if isAI then
             title = "[NPC] " .. title
+        elseif detectBadge then
+            title = detectBadge .. " " .. title
         end
-        values.Name = { Text = title, Color = primaryColor, Size = fontSize }
+        values.Name = { Text = title, Color = detectColor or primaryColor, Size = fontSize }
     end
     if cfg.HealthText then
         values.Health = { Text = string.format("%.0f HP", hum.Health), Color = computeHealthColor(hpRatio), Size = math.max(fontSize - 1, 10) }
@@ -3074,9 +3271,11 @@ local function renderTagESP(tag: TagEntry, cam: Camera, vp: Vector2)
     end
 end
 
--- HUD FOV Circle
+-- HUD FOV Circle & Silent Target Tracer
 local FOVCircleOutline = newDraw("Circle", { Thickness = 3.0, NumSides = 72, Filled = false, Color = OUTLINE_DARK, Transparency = drawTrans(0.55), ZIndex = 9, Visible = false })
 local FOVCircle = newDraw("Circle", { Thickness = 1.9, NumSides = 72, Filled = false, Transparency = drawTrans(0.95), ZIndex = 10, Visible = false })
+Combat._SilentLine = newDraw("Line", { Thickness = 1.0, Transparency = drawTrans(0.75), ZIndex = 9, Visible = false })
+Combat._SilentDot = newDraw("Circle", { Filled = true, Radius = 2.6, NumSides = 12, Transparency = drawTrans(0.95), ZIndex = 10, Visible = false })
 
 -- Connect Workspace & Players Event Listeners cleanly
 local function bindPlayerTracking(player: Player)
@@ -3188,7 +3387,803 @@ for _, wsChild in ipairs(Workspace:GetChildren()) do
 end
 Session.Bind(Workspace.ChildAdded, hookWorkspaceFolder)
 
+-- ============================================================================
+-- 8B. MISC, DETECT & VAULT SORT SUBSYSTEM
+-- ============================================================================
+Misc._GroupId = 3765739
+Misc._OwnerId = 17953224
+Misc._Doors = {} :: { [Model]: { Parts: { BasePart }, LastAutoOpen: number } }
+Misc._DoorBackups = {} :: { [BasePart]: boolean }
+Misc._DoorsScanned = false
+Misc._ScreenBackups = {} :: { [Instance]: { Prop: string, Val: any } }
+Misc._ScreenActive = false
+Misc._RoleCache = {} :: { [Player]: { Rank: number, ChatTag: string, CheckedAt: number, Fetching: boolean } }
+Misc._NotifiedDetect = {} :: { [string]: boolean }
+Misc._WatchedReports = {} :: { [Instance]: boolean }
+Misc._LastPanic = false
+Misc._MenuWasVisible = true
+Misc._LastSlowStep = 0
+Misc._Notify = nil :: ((string, string, string?) -> ())?
+Misc._SetMenuVisible = nil :: ((boolean) -> ())?
+Misc._GetMenuVisible = nil :: (() -> boolean)?
+Misc._Watermark = nil :: GuiObject?
+Misc._TargetHud = nil :: GuiObject?
+
+function Misc._SendNotify(title: string, body: string, kind: string?, bypassPanic: boolean?)
+    if not bypassPanic and Config.Misc.PanicMode and (Config.Misc.PanicHideVisuals or Config.Misc.PanicHideMenu) then
+        return
+    end
+    if Misc._Notify then
+        Misc._Notify(title, body, kind or "info")
+    end
+end
+
+function Misc.FormatMoney(val: number): string
+    local rounded = math.floor(val + 0.5)
+    local s = tostring(rounded)
+    local rev = s:reverse():gsub("(%d%d%d)", "%1,"):reverse()
+    if rev:sub(1, 1) == "," then
+        rev = rev:sub(2)
+    end
+    return "$" .. rev
+end
+
+function Misc._HideAllVisualsNow()
+    for _, entry in pairs(Actors) do
+        hideDrawingsTable(entry.Draw, entry.Highlight)
+    end
+    for _, tag in pairs(WorldTags) do
+        hideDrawingsTable(tag.Draw, tag.Highlight)
+    end
+    if FOVCircleOutline then FOVCircleOutline.Visible = false end
+    if FOVCircle then FOVCircle.Visible = false end
+    if Combat._SilentLine then Combat._SilentLine.Visible = false end
+    if Combat._SilentDot then Combat._SilentDot.Visible = false end
+    if Misc._Watermark then Misc._Watermark.Visible = false end
+    if Misc._TargetHud then Misc._TargetHud.Visible = false end
+end
+
+function Misc.RestoreScreenEffects()
+    if not Misc._ScreenActive and next(Misc._ScreenBackups) == nil then
+        return
+    end
+    Misc._ScreenActive = false
+    for inst, rec in pairs(Misc._ScreenBackups) do
+        if inst.Parent then
+            pcall(function()
+                (inst :: any)[rec.Prop] = rec.Val
+            end)
+        end
+    end
+    table.clear(Misc._ScreenBackups)
+end
+
+local function suppressEffectProp(inst: Instance, prop: string, val: any)
+    if Misc._ScreenBackups[inst] == nil then
+        local ok, orig = pcall(function()
+            return (inst :: any)[prop]
+        end)
+        if ok then
+            Misc._ScreenBackups[inst] = { Prop = prop, Val = orig }
+        end
+    end
+    pcall(function()
+        (inst :: any)[prop] = val
+    end)
+end
+
+function Misc.StepScreenEffects()
+    local shouldHide = Config.Misc.ScreenEffects and not (Config.Misc.PanicMode and Config.Misc.PanicHideVisuals)
+    if not shouldHide then
+        Misc.RestoreScreenEffects()
+        return
+    end
+    Misc._ScreenActive = true
+
+    for _, eff in ipairs(Lighting:GetChildren()) do
+        if eff:IsA("PostEffect") then
+            local ln = eff.Name:lower()
+            if ln == "lowhealtheffect" or ln == "hurteffect" or ln == "waterblur" or ln:find("flash") or ln:find("suppression") or ln:find("hurt") or ln:find("bleed") then
+                suppressEffectProp(eff, "Enabled", false)
+            end
+        end
+    end
+
+    local pg = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    if not pg then
+        return
+    end
+
+    local dmgMod = pg:FindFirstChild("DamageModule")
+    if dmgMod then
+        for _, ch in ipairs(dmgMod:GetChildren()) do
+            local ln = ch.Name:lower()
+            if ln ~= "deadscreen" and ln ~= "respawnoptions" and ln ~= "giveupbutton" and ln ~= "spectatescreen" then
+                if ch:IsA("GuiObject") and (ln:find("damage") or ln:find("suppression") or ln:find("noise") or ln:find("eye") or ln:find("flash") or ln:find("blood") or ln:find("vignette")) then
+                    suppressEffectProp(ch, "Visible", false)
+                end
+            end
+        end
+    end
+
+    local noInset = pg:FindFirstChild("NoInsetGui")
+    local mf = noInset and noInset:FindFirstChild("MainFrame")
+    local se = mf and mf:FindFirstChild("ScreenEffects")
+    if se then
+        for _, ch in ipairs(se:GetChildren()) do
+            local ln = ch.Name:lower()
+            if ln ~= "scopes" then
+                if ch:IsA("GuiObject") and (ln:find("flash") or ln:find("visor") or ln:find("parallax") or ln:find("mask") or ln:find("radiation") or ln:find("nightvision") or ln:find("snow") or ln:find("blur")) then
+                    suppressEffectProp(ch, "Visible", false)
+                elseif ch:IsA("Sound") and ln:find("earring") then
+                    suppressEffectProp(ch, "Volume", 0)
+                    pcall(function() (ch :: Sound):Stop() end)
+                elseif ln:find("flashbang") then
+                    for _, sub in ipairs(ch:GetDescendants()) do
+                        if sub:IsA("GuiObject") then
+                            suppressEffectProp(sub, "Visible", false)
+                        elseif sub:IsA("Sound") then
+                            suppressEffectProp(sub, "Volume", 0)
+                            pcall(function() (sub :: Sound):Stop() end)
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function findDoorAncestor(part: BasePart): Model?
+    local cur: Instance? = part.Parent
+    for _ = 1, 3 do
+        if not cur or cur == Workspace then
+            break
+        end
+        if cur:IsA("Model") and cur:GetAttribute("DoorState") ~= nil then
+            return cur
+        end
+        cur = cur.Parent
+    end
+    return nil
+end
+
+function Misc.RestoreDoors()
+    if next(Misc._DoorBackups) == nil then
+        return
+    end
+    for part, origCollide in pairs(Misc._DoorBackups) do
+        if part.Parent then
+            pcall(function()
+                part.CanCollide = origCollide
+            end)
+        end
+    end
+    table.clear(Misc._DoorBackups)
+end
+
+function Misc.StepPassDoor()
+    local panicBlock = Config.Misc.PanicMode and Config.Misc.PanicHideVisuals
+    local active = not panicBlock and isModeActive("PassDoor", Config.Misc.PassDoor, Config.Misc.PassDoorMode, Config.Misc.PassDoorKey)
+    if not active then
+        Misc.RestoreDoors()
+        return
+    end
+
+    local now = os.clock()
+    if now - (Misc._LastDoorQuery or 0) < 0.08 then
+        return
+    end
+    Misc._LastDoorQuery = now
+
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp or not hrp:IsA("BasePart") then
+        Misc.RestoreDoors()
+        return
+    end
+
+    local range = math.clamp(Config.Misc.PassDoorRange or 18, 6, 45)
+    local params = Misc._DoorOverlap
+    if not params then
+        params = OverlapParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        params.MaxParts = 160
+        Misc._DoorOverlap = params
+    end
+    local excludes: { Instance } = { char }
+    if Workspace.CurrentCamera then
+        table.insert(excludes, Workspace.CurrentCamera)
+    end
+    params.FilterDescendantsInstances = excludes
+
+    local nearby = Workspace:GetPartBoundsInRadius(hrp.Position, range, params)
+    local activeParts: { [BasePart]: boolean } = {}
+    local autoOpened: { [Model]: boolean } = {}
+
+    for _, hit in ipairs(nearby) do
+        if hit:IsA("BasePart") then
+            local ln = hit.Name:lower()
+            if not (ln == "frame" or ln == "doorframe" or ln == "hinge" or ln == "hinges" or ln == "jamb" or ln:find("frame")) then
+                local doorModel = findDoorAncestor(hit)
+                if doorModel then
+                    activeParts[hit] = true
+                    if Misc._DoorBackups[hit] == nil then
+                        Misc._DoorBackups[hit] = hit.CanCollide
+                    end
+                    hit.CanCollide = false
+
+                    if Config.Misc.PassDoorAutoOpen and not autoOpened[doorModel] and doorModel:GetAttribute("DoorState") == false then
+                        autoOpened[doorModel] = true
+                        local lastOpen = Misc._Doors[doorModel] and Misc._Doors[doorModel].LastAutoOpen or 0
+                        if (now - lastOpen) > 1.5 and (hit.Position - hrp.Position).Magnitude <= 8.5 and type(fireproximityprompt) == "function" then
+                            local prompt = doorModel:FindFirstChildWhichIsA("ProximityPrompt", true)
+                            if prompt and prompt.Enabled then
+                                local act = prompt.ActionText:lower()
+                                if not act:find("lock") or act:find("unlock") or act:find("open") then
+                                    Misc._Doors[doorModel] = Misc._Doors[doorModel] or { Parts = {}, LastAutoOpen = 0 }
+                                    Misc._Doors[doorModel].LastAutoOpen = now
+                                    pcall(fireproximityprompt, prompt)
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    for part, origCollide in pairs(Misc._DoorBackups) do
+        if not part.Parent or not activeParts[part] then
+            if part.Parent then
+                pcall(function()
+                    part.CanCollide = origCollide
+                end)
+            end
+            Misc._DoorBackups[part] = nil
+        end
+    end
+end
+
+function Misc.StepFastTrade()
+    if not Config.Misc.FastTrade then
+        return
+    end
+    local pg = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    local mg = pg and pg:FindFirstChild("MainGui")
+    local mf = mg and mg:FindFirstChild("MainFrame")
+    local bf = mf and mf:FindFirstChild("BackpackFrame")
+    local ti = bf and bf:FindFirstChild("TradeInfo")
+    if not ti or not ti:IsA("GuiObject") or not ti.Visible then
+        return
+    end
+    local validating = ti:FindFirstChild("Validating")
+    if validating and validating:IsA("GuiObject") then
+        if not validating:GetAttribute("__DeltaFastHook") then
+            validating:SetAttribute("__DeltaFastHook", true)
+            Session.Bind(validating:GetPropertyChangedSignal("Visible"), function()
+                if Config.Misc.FastTrade and validating.Visible then
+                    validating.Visible = false
+                end
+            end)
+        end
+        validating.Visible = false
+    end
+    local btns = ti:FindFirstChild("Buttons")
+    if btns then
+        for _, bName in ipairs({ "Confirm", "Exchange" }) do
+            local btn = btns:FindFirstChild(bName)
+            if btn and btn:IsA("GuiButton") then
+                btn.Active = true
+                btn.AutoButtonColor = true
+            end
+        end
+    end
+end
+
+function Misc.SetPanicMode(on: boolean, notifyToggle: boolean?)
+    Config.Misc.PanicMode = on
+    Misc._LastPanic = on
+    if on then
+        if Misc._GetMenuVisible then
+            Misc._MenuWasVisible = Misc._GetMenuVisible()
+        end
+        if Config.Misc.PanicHideVisuals then
+            Misc._HideAllVisualsNow()
+            World.Step(true)
+            Misc.RestoreScreenEffects()
+            Misc.RestoreDoors()
+        end
+        if Config.Misc.PanicDisableCombat then
+            ActiveLockedTarget = nil
+            Combat.RestoreAllWeaponMods()
+        end
+        if Config.Misc.PanicHideMenu and Misc._SetMenuVisible then
+            Misc._SetMenuVisible(false)
+        end
+    else
+        if Config.Misc.PanicDisableCombat then
+            Combat.ApplyWeaponMods()
+        end
+        World.Step(false)
+        if Misc._Watermark then
+            Misc._Watermark.Visible = Config.Settings.Watermark
+        end
+        if Config.Misc.PanicHideMenu and Misc._MenuWasVisible and Misc._SetMenuVisible then
+            Misc._SetMenuVisible(true)
+        end
+        if notifyToggle then
+            Misc._SendNotify("Panic Mode", "Restored active suite settings.", "info", true)
+        end
+    end
+end
+
+Misc._ReportStatsCache = {} :: { [Player]: { Flags: number, HSR: number, KDR: number, UpdatedAt: number } }
+
+local function readPlayerReportStats(player: Player): (number, number, number)
+    local cached = Misc._ReportStatsCache[player]
+    local now = os.clock()
+    if cached and (now - cached.UpdatedAt) < 2.0 then
+        return cached.Flags, cached.HSR, cached.KDR
+    end
+
+    local flags, hsr, kdr = 0, 0, 0
+    local reportList = ReplicatedStorage:FindFirstChild("ReportList")
+    if reportList then
+        local repKey = player.Name .. "_" .. tostring(player.UserId)
+        local mw = reportList:FindFirstChild("MostWanted")
+        local rec = reportList:FindFirstChild("Recent")
+        local repFolder = (mw and mw:FindFirstChild(repKey))
+            or (rec and rec:FindFirstChild(repKey))
+            or reportList:FindFirstChild(repKey)
+        if repFolder then
+            flags = tonumber(repFolder:GetAttribute("TotalFlags")) or 0
+            local rawHsr = repFolder:GetAttribute("HSR")
+            hsr = type(rawHsr) == "number" and rawHsr or (tonumber(tostring(rawHsr or ""):match("[%d%.]+")) or 0)
+            local rawKdr = repFolder:GetAttribute("KDR")
+            if type(rawKdr) == "number" then
+                kdr = rawKdr
+            elseif type(rawKdr) == "string" then
+                kdr = tonumber(rawKdr:match("/([%d%.]+)$") or rawKdr) or 0
+            end
+        end
+    end
+
+    Misc._ReportStatsCache[player] = { Flags = flags, HSR = hsr, KDR = kdr, UpdatedAt = now }
+    return flags, hsr, kdr
+end
+
+local function ensurePlayerRoleFetched(player: Player)
+    if player == LocalPlayer or not player.Parent then
+        return
+    end
+    local cur = Misc._RoleCache[player]
+    local now = os.clock()
+    if cur and (cur.Fetching or (now - cur.CheckedAt) < 45) then
+        return
+    end
+    local rec = cur or { Rank = 0, ChatTag = "", CheckedAt = now, Fetching = true }
+    rec.Fetching = true
+    Misc._RoleCache[player] = rec
+
+    task.spawn(function()
+        local okRank, rank = pcall(function()
+            return player:GetRankInGroup(Misc._GroupId)
+        end)
+        if okRank and type(rank) == "number" then
+            rec.Rank = rank
+        end
+
+        local tags: { string } = {}
+        local rsPlr = Delta.GetRSPlayer(player)
+        local status = rsPlr and rsPlr:FindFirstChild("Status")
+        local chatTags = status and status:FindFirstChild("ChatTags")
+        if chatTags then
+            for k, v in pairs(chatTags:GetAttributes()) do
+                table.insert(tags, tostring(k) .. " " .. tostring(v))
+            end
+            for _, ch in ipairs(chatTags:GetChildren()) do
+                table.insert(tags, ch.Name)
+                if ch:IsA("StringValue") then
+                    table.insert(tags, ch.Value)
+                end
+            end
+        end
+        rec.ChatTag = table.concat(tags, " "):lower()
+        rec.CheckedAt = os.clock()
+        rec.Fetching = false
+        if player.Parent and Misc.EvaluatePlayerDetect then
+            Misc.EvaluatePlayerDetect(player)
+        end
+    end)
+end
+
+function Misc.ClassifyPlayer(player: Player): { IsMod: boolean, IsCC: boolean, IsTester: boolean, IsCheater: boolean, Reasons: { string } }
+    ensurePlayerRoleFetched(player)
+    local rec = Misc._RoleCache[player]
+    local rank = rec and rec.Rank or 0
+    local ct = rec and rec.ChatTag or ""
+
+    local isMod = (player.UserId == Misc._OwnerId) or (rank >= 5) or (ct:find("mod") ~= nil) or (ct:find("admin") ~= nil) or (ct:find("dev") ~= nil)
+    local isCC = (rank == 4) or (ct:find("creator") ~= nil) or (ct:find("youtube") ~= nil) or (ct:find("twitch") ~= nil)
+    local isTester = (rank == 3) or (ct:find("tester") ~= nil)
+
+    local flags, hsr, kdr = readPlayerReportStats(player)
+    local reasons: { string } = {}
+    local isCheater = false
+    if flags >= (Config.Detect.CheaterMinFlags or 25) then
+        isCheater = true
+        table.insert(reasons, string.format("%d flags", flags))
+    end
+    if hsr >= (Config.Detect.CheaterMinHSR or 75) then
+        isCheater = true
+        table.insert(reasons, string.format("%.0f%% HSR", hsr))
+    end
+    if kdr >= (Config.Detect.CheaterMinKDR or 5.0) then
+        isCheater = true
+        table.insert(reasons, string.format("%.1f KDR", kdr))
+    end
+
+    return {
+        IsMod = isMod,
+        IsCC = isCC,
+        IsTester = isTester,
+        IsCheater = isCheater,
+        Reasons = reasons,
+    }
+end
+
+function Misc.EvaluatePlayerDetect(player: Player)
+    if player == LocalPlayer or not Session.IsAlive() then
+        return
+    end
+    local cls = Misc.ClassifyPlayer(player)
+    local checks = {
+        { Enabled = Config.Detect.Moderator, Notify = Config.Detect.ModeratorNotify, Flag = cls.IsMod, Tag = "Moderator", Kind = "danger", Detail = "Staff / Group Rank detected" },
+        { Enabled = Config.Detect.ContentCreator, Notify = Config.Detect.ContentCreatorNotify, Flag = cls.IsCC, Tag = "Content Creator", Kind = "info", Detail = "Partnered creator detected" },
+        { Enabled = Config.Detect.Tester, Notify = Config.Detect.TesterNotify, Flag = cls.IsTester, Tag = "Tester", Kind = "info", Detail = "QA / QA Tester detected" },
+        { Enabled = Config.Detect.Cheater, Notify = Config.Detect.CheaterNotify, Flag = cls.IsCheater, Tag = "Suspicious Player", Kind = "danger", Detail = (#cls.Reasons > 0) and table.concat(cls.Reasons, ", ") or "High stat threshold" },
+    }
+    for _, c in ipairs(checks) do
+        if c.Enabled and c.Notify and c.Flag then
+            local key = c.Tag .. "_" .. tostring(player.UserId)
+            if not Misc._NotifiedDetect[key] then
+                Misc._NotifiedDetect[key] = true
+                Misc._SendNotify(c.Tag .. " Detected", string.format("%s (@%s) - %s", player.DisplayName, player.Name, c.Detail), c.Kind)
+            end
+        end
+    end
+end
+
+function Misc.GetDetectTag(player: Player): (string?, Color3?)
+    if player == LocalPlayer then
+        return nil, nil
+    end
+    local anyBadge = (Config.Detect.Moderator and Config.Detect.ModeratorBadge)
+        or (Config.Detect.Cheater and Config.Detect.CheaterBadge)
+        or (Config.Detect.ContentCreator and Config.Detect.ContentCreatorBadge)
+        or (Config.Detect.Tester and Config.Detect.TesterBadge)
+    if not anyBadge then
+        return nil, nil
+    end
+    local cls = Misc.ClassifyPlayer(player)
+    local tags: { string } = {}
+    local tagColor: Color3? = nil
+    if Config.Detect.Moderator and Config.Detect.ModeratorBadge and cls.IsMod then
+        table.insert(tags, "[MOD]")
+        tagColor = Color3.fromRGB(251, 146, 60)
+    end
+    if Config.Detect.Cheater and Config.Detect.CheaterBadge and cls.IsCheater then
+        table.insert(tags, "[CHEATER]")
+        if not tagColor then
+            tagColor = Color3.fromRGB(239, 68, 68)
+        end
+    end
+    if Config.Detect.ContentCreator and Config.Detect.ContentCreatorBadge and cls.IsCC then
+        table.insert(tags, "[CC]")
+        if not tagColor then
+            tagColor = Color3.fromRGB(192, 132, 252)
+        end
+    end
+    if Config.Detect.Tester and Config.Detect.TesterBadge and cls.IsTester then
+        table.insert(tags, "[TESTER]")
+        if not tagColor then
+            tagColor = Color3.fromRGB(56, 189, 248)
+        end
+    end
+    if #tags == 0 then
+        return nil, nil
+    end
+    return table.concat(tags, " "), tagColor
+end
+
+function Misc.SortVaultByValue()
+    local rsPlr = Delta.GetRSPlayer(LocalPlayer)
+    local vault = rsPlr and rsPlr:FindFirstChild("VaultStorage")
+    local inv = vault and vault:FindFirstChild("Inventory")
+    if not inv then
+        Misc._SendNotify("Vault Sort", "VaultStorage not accessible here (open Vault/Main Menu).", "info", true)
+        return
+    end
+
+    local totalVal = 0
+    local topName = ""
+    local topVal = 0
+    local invItems = inv:GetChildren()
+    local itemPoolByName: { [string]: { number } } = {}
+    local itemValsByObj: { [Instance]: number } = {}
+    local itemValBySlot: { [string]: number } = {}
+
+    for _, item in ipairs(invItems) do
+        local val, _, dispName = Delta.GetItemValue(item, true)
+        totalVal += val
+        itemValsByObj[item] = val
+        local slotAttr = item:GetAttribute("Slot")
+        if type(slotAttr) == "string" and slotAttr ~= "" then
+            itemValBySlot[slotAttr] = (itemValBySlot[slotAttr] or 0) + val
+        end
+        local key1 = item.Name:lower()
+        local key2 = dispName:lower()
+        itemPoolByName[key1] = itemPoolByName[key1] or {}
+        table.insert(itemPoolByName[key1], val)
+        if key2 ~= key1 then
+            itemPoolByName[key2] = itemPoolByName[key2] or {}
+            table.insert(itemPoolByName[key2], val)
+        end
+        if val > topVal then
+            topVal = val
+            topName = dispName
+        end
+    end
+    for _, list in pairs(itemPoolByName) do
+        table.sort(list, function(a, b) return a > b end)
+    end
+
+    -- Locate visible Vault / Loot Container Grid
+    local pg = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    local mg = pg and pg:FindFirstChild("MainGui")
+    local mf = mg and mg:FindFirstChild("MainFrame")
+    local bf = mf and mf:FindFirstChild("BackpackFrame")
+    local containerFrame: Instance? = nil
+    if bf then
+        local loot = bf:FindFirstChild("Loot")
+        local lInv = loot and loot:FindFirstChild("Inventory")
+        local sc = lInv and lInv:FindFirstChild("ScrollingFrame")
+        local cont = sc and sc:FindFirstChild("Container")
+        local fr = cont and cont:FindFirstChild("Frame")
+        if fr then
+            containerFrame = fr
+        end
+    end
+
+    local sortedSlots = 0
+    if containerFrame then
+        local grid = containerFrame:FindFirstChildWhichIsA("UIGridLayout")
+        if grid then
+            grid.SortOrder = Enum.SortOrder.LayoutOrder
+        end
+
+        type SlotEntry = { Frame: GuiObject, Value: number, OrigIdx: number, Name: string }
+        local entries: { SlotEntry } = {}
+        local origIdx = 0
+
+        for _, child in ipairs(containerFrame:GetChildren()) do
+            if child:IsA("GuiObject") then
+                origIdx += 1
+                local slotVal = -1
+                local slotName = child.Name
+
+                -- Strategy 1: Live ObjectValue link on Container slot frame
+                local objVal = child:FindFirstChildWhichIsA("ObjectValue", true)
+                if objVal and objVal.Value then
+                    slotVal = itemValsByObj[objVal.Value] or Delta.GetItemValue(objVal.Value, true)
+                    slotName = objVal.Value.Name
+                elseif itemValBySlot[child.Name] ~= nil then
+                    -- Strategy 2: Direct Project Delta Slot attribute match ("Container1..N")
+                    slotVal = itemValBySlot[child.Name]
+                else
+                    -- Strategy 3: ItemName / DisplayName attribute or label text
+                    local attrName = child:GetAttribute("ItemName") or child:GetAttribute("Item") or child:GetAttribute("DisplayName")
+                    local candidateKey: string? = (type(attrName) == "string" and attrName ~= "") and attrName or nil
+                    if not candidateKey then
+                        for _, desc in ipairs(child:GetDescendants()) do
+                            if desc:IsA("TextLabel") and (desc.Name:lower():find("name") or desc.Name:lower():find("title")) and desc.Text ~= "" then
+                                candidateKey = desc.Text
+                                break
+                            end
+                        end
+                    end
+                    if candidateKey then
+                        local pool = itemPoolByName[candidateKey:lower()]
+                        if pool and #pool > 0 then
+                            slotVal = table.remove(pool, 1) :: number
+                        elseif ItemsPriceCache[candidateKey] then
+                            slotVal = ItemsPriceCache[candidateKey].Price
+                        end
+                        slotName = candidateKey
+                    elseif child:FindFirstChildWhichIsA("ViewportFrame") or child:FindFirstChildWhichIsA("ImageLabel") then
+                        for _, sub in ipairs(child:GetChildren()) do
+                            if not sub:IsA("UIStroke") and not sub:IsA("UICorner") and not sub:IsA("UIAspectRatioConstraint") then
+                                local pool = itemPoolByName[sub.Name:lower()]
+                                if pool and #pool > 0 then
+                                    slotVal = table.remove(pool, 1) :: number
+                                    slotName = sub.Name
+                                    break
+                                end
+                            end
+                        end
+                    end
+                end
+
+                if slotVal >= 0 then
+                    sortedSlots += 1
+                end
+                table.insert(entries, {
+                    Frame = child,
+                    Value = slotVal,
+                    OrigIdx = origIdx,
+                    Name = slotName,
+                })
+            end
+        end
+
+        table.sort(entries, function(a, b)
+            if (a.Value >= 0) ~= (b.Value >= 0) then
+                return a.Value >= 0
+            end
+            if a.Value ~= b.Value then
+                return a.Value > b.Value
+            end
+            if a.Name ~= b.Name then
+                return a.Name < b.Name
+            end
+            return a.OrigIdx < b.OrigIdx
+        end)
+
+        for rank, rec in ipairs(entries) do
+            rec.Frame.LayoutOrder = (rec.Value >= 0) and rank or (1000 + rec.OrigIdx)
+        end
+    end
+
+    local msg = string.format("Total: %s (%d items)", Misc.FormatMoney(totalVal), #invItems)
+    if topName ~= "" then
+        msg = msg .. string.format(" | Top: %s (%s)", topName, Misc.FormatMoney(topVal))
+    end
+    if sortedSlots > 0 then
+        msg = msg .. string.format(" | Sorted %d slots", sortedSlots)
+    end
+    Misc._SendNotify("Vault Sort", msg, "success", true)
+end
+
+function Misc.InitListeners()
+    -- Watch LocalPlayer UAC Reports asynchronously
+    task.spawn(function()
+        local deadline = os.clock() + 20
+        local reports: Instance? = nil
+        while Session.IsAlive() and os.clock() < deadline do
+            local rsPlr = Delta.GetRSPlayer(LocalPlayer)
+            local st = rsPlr and rsPlr:FindFirstChild("Status")
+            local uac = st and st:FindFirstChild("UAC")
+            reports = uac and uac:FindFirstChild("Reports")
+            if reports then
+                break
+            end
+            task.wait(0.75)
+        end
+        if reports and Session.IsAlive() then
+            Session.Bind(reports.ChildAdded, function(rep)
+                if Config.Misc.ReportNotify and Config.Misc.ReportAlertSelf then
+                    Misc._SendNotify("Report Alert", "New self UAC flag recorded: " .. rep.Name, "danger")
+                end
+            end)
+        end
+    end)
+
+    -- Watch ReplicatedStorage.ReportList.Recent
+    local function attachRecentEntry(entry: Instance)
+        if Misc._WatchedReports[entry] then
+            return
+        end
+        Misc._WatchedReports[entry] = true
+        local lastFlags = tonumber(entry:GetAttribute("TotalFlags")) or 0
+        Session.Bind(entry:GetAttributeChangedSignal("TotalFlags"), function()
+            local cur = tonumber(entry:GetAttribute("TotalFlags")) or 0
+            if cur > lastFlags then
+                lastFlags = cur
+                if Config.Misc.ReportNotify then
+                    local isSelf = entry.Name:find("^" .. LocalPlayer.Name .. "_") ~= nil
+                    if (isSelf and Config.Misc.ReportAlertSelf) or (not isSelf and Config.Misc.ReportAlertServer) then
+                        local plrName = entry.Name:match("^(.+)_%d+$") or entry.Name
+                        Misc._SendNotify(isSelf and "Report Alert" or "Server Report", string.format("%s flagged (%d total)", plrName, cur), isSelf and "danger" or "info")
+                    end
+                end
+            end
+        end)
+    end
+
+    local rl = ReplicatedStorage:FindFirstChild("ReportList")
+    local recent = rl and rl:FindFirstChild("Recent")
+    if recent then
+        for _, ch in ipairs(recent:GetChildren()) do
+            attachRecentEntry(ch)
+        end
+        Session.Bind(recent.ChildAdded, function(entry)
+            attachRecentEntry(entry)
+            if Config.Misc.ReportNotify and Config.Misc.ReportAlertServer then
+                local isSelf = entry.Name:find("^" .. LocalPlayer.Name .. "_") ~= nil
+                if not isSelf then
+                    local plrName = entry.Name:match("^(.+)_%d+$") or entry.Name
+                    Misc._SendNotify("Server Report", string.format("%s added to recent flags", plrName), "info")
+                end
+            end
+        end)
+    end
+
+    -- Scan current players asynchronously + bind PlayerAdded/Removing for Join Notify & Detect
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer then
+            ensurePlayerRoleFetched(plr)
+        end
+    end
+
+    Session.Bind(Players.PlayerAdded, function(plr: Player)
+        if plr == LocalPlayer then
+            return
+        end
+        ensurePlayerRoleFetched(plr)
+        task.spawn(function()
+            task.wait(0.8)
+            if not plr.Parent or not Session.IsAlive() then
+                return
+            end
+            local cls = Misc.ClassifyPlayer(plr)
+            local isFlagged = cls.IsMod or cls.IsCC or cls.IsTester or cls.IsCheater or (plr.AccountAge < 7)
+            if Config.Misc.JoinNotify and (not Config.Misc.JoinAlertFlaggedOnly or isFlagged) then
+                local notes: { string } = {}
+                if cls.IsMod then table.insert(notes, "MOD") end
+                if cls.IsCC then table.insert(notes, "CC") end
+                if cls.IsTester then table.insert(notes, "TESTER") end
+                if cls.IsCheater then table.insert(notes, "CHEATER") end
+                if Config.Misc.JoinShowAge then
+                    table.insert(notes, string.format("Age: %dd", plr.AccountAge))
+                end
+                local suffix = (#notes > 0) and (" (" .. table.concat(notes, " | ") .. ")") or ""
+                Misc._SendNotify("Player Joined", string.format("%s (@%s)%s", plr.DisplayName, plr.Name, suffix), cls.IsMod and "danger" or "info")
+            end
+        end)
+    end)
+
+    Session.Bind(Players.PlayerRemoving, function(plr: Player)
+        local wasFlagged = false
+        local cached = Misc._RoleCache[plr]
+        if cached and cached.Rank >= 3 then
+            wasFlagged = true
+        end
+        Misc._RoleCache[plr] = nil
+        Misc._ReportStatsCache[plr] = nil
+        if plr ~= LocalPlayer and Config.Misc.JoinNotify and Config.Misc.JoinLeaveAlerts and (not Config.Misc.JoinAlertFlaggedOnly or wasFlagged) then
+            Misc._SendNotify("Player Left", string.format("%s (@%s) disconnected", plr.DisplayName, plr.Name), "info")
+        end
+    end)
+end
+
+function Misc.Step()
+    if Config.Misc.PanicMode ~= Misc._LastPanic then
+        Misc.SetPanicMode(Config.Misc.PanicMode, false)
+    end
+    Misc.StepPassDoor()
+    local now = os.clock()
+    if now - Misc._LastSlowStep >= 0.1 then
+        Misc._LastSlowStep = now
+        Misc.StepFastTrade()
+        Misc.StepScreenEffects()
+    end
+end
+
+Misc.InitListeners()
+
 Session.OnStop(function()
+    Misc.RestoreDoors()
+    Misc.RestoreScreenEffects()
     Combat.RestoreAllWeaponMods()
     World.RestoreAll()
     for _, entry in pairs(Actors) do
@@ -3204,6 +4199,12 @@ Session.OnStop(function()
     end
     if FOVCircle then
         pcall(function() FOVCircle:Remove() end)
+    end
+    if Combat._SilentLine then
+        pcall(function() Combat._SilentLine:Remove() end)
+    end
+    if Combat._SilentDot then
+        pcall(function() Combat._SilentDot:Remove() end)
     end
 end)
 
@@ -3327,11 +4328,13 @@ function UI.RefreshAll()
     UI.NotifyChange()
 end
 
-function UI.Notify(title: string, desc: string, kind: ("info" | "success" | "warn")?)
+function UI.Notify(title: string, desc: string, kind: ("info" | "success" | "warn" | "danger")?)
     if not Config.Settings.Notifications or not Session.IsAlive() then
         return
     end
-    local accent = kind == "success" and THEME.Success or (kind == "warn" and Color3.fromRGB(245, 158, 11) or THEME.Accent)
+    local accent = kind == "success" and THEME.Success
+        or (kind == "danger" and THEME.Danger
+        or (kind == "warn" and Color3.fromRGB(245, 158, 11) or THEME.Accent))
     local card = Instance.new("Frame")
     card.Size = UDim2.new(1, 0, 0, 52)
     card.BackgroundColor3 = THEME.BgCard
@@ -3414,6 +4417,9 @@ WatermarkText.TextColor3 = THEME.TextPrimary
 WatermarkText.TextXAlignment = Enum.TextXAlignment.Left
 WatermarkText.Text = "DELTA SUITE  |  Project Delta"
 WatermarkText.Parent = WatermarkFrame
+
+Misc._Notify = UI.Notify
+Misc._Watermark = WatermarkFrame
 
 -- Target Lock HUD (Top Center-Bottom)
 local TargetHudFrame = Instance.new("Frame")
@@ -4317,6 +5323,111 @@ local function addPopupToggle(pop: Frame, label: string, getter: () -> boolean, 
     end)
 end
 
+function UI._AddPopupKeybind(pop: Frame, label: string, getter: () -> BindValue, setter: (BindValue) -> ())
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, 0, 0, 22)
+    row.BackgroundTransparency = 1
+    row.ZIndex = 66
+    row.Parent = pop
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -66, 1, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextSize = 11
+    lbl.TextColor3 = THEME.TextPrimary
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Text = label
+    lbl.ZIndex = 66
+    lbl.Parent = row
+
+    local bindBtn = Instance.new("TextButton")
+    bindBtn.AnchorPoint = Vector2.new(1, 0.5)
+    bindBtn.Position = UDim2.new(1, 0, 0.5, 0)
+    bindBtn.Size = UDim2.fromOffset(60, 20)
+    bindBtn.BackgroundColor3 = THEME.BgControl
+    bindBtn.Font = Enum.Font.GothamMedium
+    bindBtn.TextSize = 10
+    bindBtn.TextColor3 = THEME.TextSecondary
+    bindBtn.AutoButtonColor = false
+    bindBtn.ZIndex = 66
+    bindBtn.Parent = row
+    addCorner(bindBtn, 5)
+    addStroke(bindBtn, THEME.Border, 1, 0.2)
+
+    local entry: any = { Get = getter, Set = setter }
+    entry.Refresh = function()
+        if not bindBtn.Parent then
+            return
+        end
+        if ListeningPicker == entry then
+            bindBtn.Text = "..."
+            bindBtn.TextColor3 = THEME.Accent
+        else
+            bindBtn.Text = formatBindName(getter())
+            bindBtn.TextColor3 = THEME.TextSecondary
+        end
+    end
+    entry.Refresh()
+
+    bindBtn.MouseButton1Click:Connect(function()
+        ListeningPicker = entry
+        entry.Refresh()
+    end)
+    pop.Destroying:Connect(function()
+        if ListeningPicker == entry then
+            ListeningPicker = nil
+        end
+    end)
+end
+
+function UI._AddPopupCycle(pop: Frame, label: string, options: { string }, getter: () -> string, setter: (string) -> ())
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, 0, 0, 22)
+    row.BackgroundTransparency = 1
+    row.ZIndex = 66
+    row.Parent = pop
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -82, 1, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextSize = 11
+    lbl.TextColor3 = THEME.TextPrimary
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Text = label
+    lbl.ZIndex = 66
+    lbl.Parent = row
+
+    local cycBtn = Instance.new("TextButton")
+    cycBtn.AnchorPoint = Vector2.new(1, 0.5)
+    cycBtn.Position = UDim2.new(1, 0, 0.5, 0)
+    cycBtn.Size = UDim2.fromOffset(76, 20)
+    cycBtn.BackgroundColor3 = THEME.BgControl
+    cycBtn.Font = Enum.Font.GothamMedium
+    cycBtn.TextSize = 10
+    cycBtn.TextColor3 = THEME.Accent
+    cycBtn.AutoButtonColor = false
+    cycBtn.ZIndex = 66
+    cycBtn.Parent = row
+    addCorner(cycBtn, 5)
+    addStroke(cycBtn, THEME.Border, 1, 0.2)
+
+    local function sync()
+        cycBtn.Text = getter() .. " >"
+    end
+    sync()
+
+    cycBtn.MouseButton1Click:Connect(function()
+        local cur = getter()
+        local idx = table.find(options, cur) or 1
+        local nextOpt = options[(idx % #options) + 1] or options[1]
+        setter(nextOpt)
+        sync()
+        UI.NotifyChange()
+    end)
+end
+
 function UI.AddColorPicker(sec: Frame, label: string, getter: () -> Color3, setter: (Color3) -> ())
     local row = Instance.new("Frame")
     row.Size = UDim2.new(1, 0, 0, 24)
@@ -4487,18 +5598,24 @@ function UI.AddKeybindRow(sec: Frame, label: string, getFn: () -> BindValue, set
     bb.Position = UDim2.new(1, 0, 0.5, 0)
 end
 
-function UI.AddButton(sec: Frame, label: string, style: ("normal" | "danger")?, onClick: () -> ())
+function UI.AddButton(sec: Frame, label: string, style: ("normal" | "danger" | "accent")?, onClick: () -> ())
+    local bg = style == "danger" and Color3.fromRGB(70, 22, 29)
+        or (style == "accent" and Color3.fromRGB(16, 44, 64) or THEME.BgControl)
+    local fg = style == "danger" and Color3.fromRGB(252, 165, 165)
+        or (style == "accent" and THEME.Accent or THEME.TextPrimary)
+    local strokeCol = style == "danger" and THEME.Danger or (style == "accent" and THEME.Accent or THEME.Border)
+
     local btn = Instance.new("TextButton")
     btn.Size = UDim2.new(1, 0, 0, 28)
-    btn.BackgroundColor3 = style == "danger" and Color3.fromRGB(70, 22, 29) or THEME.BgControl
+    btn.BackgroundColor3 = bg
     btn.Font = Enum.Font.GothamBold
     btn.TextSize = 12
-    btn.TextColor3 = style == "danger" and Color3.fromRGB(252, 165, 165) or THEME.TextPrimary
+    btn.TextColor3 = fg
     btn.Text = label
     btn.AutoButtonColor = false
     btn.Parent = sec
     addCorner(btn, 6)
-    addStroke(btn, style == "danger" and THEME.Danger or THEME.Border, 1, 0.35)
+    addStroke(btn, strokeCol, 1, 0.35)
 
     Session.Bind(btn.MouseButton1Click, onClick)
 end
@@ -4624,7 +5741,8 @@ function UI.AddToggleWithConfig(
     label: string,
     getter: () -> boolean,
     setter: (boolean) -> (),
-    buildPopover: (pop: Frame, anchorBtn: TextButton) -> ()
+    buildPopover: (pop: Frame, anchorBtn: TextButton) -> (),
+    popHeight: number?
 )
     local row = Instance.new("Frame")
     row.Size = UDim2.new(1, 0, 0, 24)
@@ -4703,7 +5821,7 @@ function UI.AddToggleWithConfig(
         end
         IgnoreNextPopupDismiss = true
         local pop = Instance.new("Frame")
-        pop.Size = UDim2.fromOffset(224, 128)
+        pop.Size = UDim2.fromOffset(224, popHeight or 128)
         pop.BackgroundColor3 = THEME.BgSidebar
         pop.ZIndex = 65
         pop.Parent = PopupLayer
@@ -4736,10 +5854,11 @@ function UI.AddToggleWithConfig(
 end
 
 -- ============================================================================
--- 10. POPULATE TABS (COMBAT, VISUALS, SETTINGS ONLY)
+-- 10. POPULATE TABS (COMBAT, VISUALS, MISC, SETTINGS)
 -- ============================================================================
 local CombatTab = UI.AddTab("Combat")
 local VisualsTab = UI.AddTab("Visuals")
+local MiscTab = UI.AddTab("Misc")
 local SettingsTab = UI.AddTab("Settings")
 
 -- ---- COMBAT TAB ----
@@ -4791,6 +5910,9 @@ do
             ToggleStates.SilentAim = true
         end
     end)
+    UI.AddDropdown(secSilent, "Target Priority", { "Crosshair", "Closest Dist", "Lowest HP" }, function() return Config.SilentAim.Priority end, function(v)
+        Config.SilentAim.Priority = v
+    end)
     UI.AddDropdown(secSilent, "Target Hitbox", { "Head", "FaceHitBox", "HeadTopHitBox", "UpperTorso", "HumanoidRootPart", "Closest" },
         function() return Config.SilentAim.HitPart end, function(v)
             Config.SilentAim.HitPart = v
@@ -4807,13 +5929,17 @@ do
     UI.AddSlider(secSilent, "Hit Chance", 10, 100, 5, "%", function() return Config.SilentAim.HitChance end, function(v) Config.SilentAim.HitChance = v end)
     UI.AddToggle(secSilent, "Use FOV Circle", function() return Config.SilentAim.UseFOV end, function(v) Config.SilentAim.UseFOV = v end)
     UI.AddToggle(secSilent, "Team / Clan Check", function() return Config.SilentAim.TeamCheck end, function(v) Config.SilentAim.TeamCheck = v end)
+    UI.AddToggle(secSilent, "Ignore Downed", function() return Config.SilentAim.IgnoreDowned end, function(v) Config.SilentAim.IgnoreDowned = v end)
     UI.AddToggle(secSilent, "Wall Check", function() return Config.SilentAim.VisibleCheck end, function(v) Config.SilentAim.VisibleCheck = v end)
+    UI.AddToggle(secSilent, "Multi-Point Scan", function() return Config.SilentAim.MultiPoint end, function(v) Config.SilentAim.MultiPoint = v end)
     UI.AddToggle(secSilent, "Target AI / Bots", function() return Config.Targeting.TargetAI end, function(v)
         Config.Targeting.TargetAI = v
         Config.SilentAim.TargetAI = v
         UI.RefreshAll()
     end)
     UI.AddToggle(secSilent, "Ballistic Prediction", function() return Config.SilentAim.Prediction end, function(v) Config.SilentAim.Prediction = v end)
+    UI.AddToggle(secSilent, "Bullet Drop Comp", function() return Config.SilentAim.DropComp end, function(v) Config.SilentAim.DropComp = v end)
+    UI.AddToggle(secSilent, "Show Target Line", function() return Config.SilentAim.TargetLine end, function(v) Config.SilentAim.TargetLine = v end)
 
     local secTargeting = UI.AddSection(CombatTab, "Right", "Targeting")
     UI.AddSlider(secTargeting, "FOV", 25, 500, 5, "", function() return Config.Targeting.FOV end, function(v)
@@ -5118,6 +6244,111 @@ do
     UI.AddSlider(secWorld, "Field of View", 60, 120, 1, "deg", function() return Config.World.FOVValue end, function(v) Config.World.FOVValue = v end)
 end
 
+-- ---- MISC TAB ----
+do
+    local secMisc = UI.AddSection(MiscTab, "Left", "Misc")
+    UI.AddToggle(secMisc, "Fast Trade", function() return Config.Misc.FastTrade end, function(v)
+        Config.Misc.FastTrade = v
+    end)
+
+    UI.AddToggleWithConfig(secMisc, "Panic Mode", function() return Config.Misc.PanicMode end, function(v)
+        Misc.SetPanicMode(v, false)
+    end, function(pop)
+        UI._AddPopupKeybind(pop, "Panic Key", function() return Config.Misc.PanicKey end, function(k) Config.Misc.PanicKey = k end)
+        addPopupToggle(pop, "Hide Visuals", function() return Config.Misc.PanicHideVisuals end, function(v)
+            Config.Misc.PanicHideVisuals = v
+            if Config.Misc.PanicMode then Misc.SetPanicMode(true, false) end
+        end)
+        addPopupToggle(pop, "Disable Combat", function() return Config.Misc.PanicDisableCombat end, function(v)
+            Config.Misc.PanicDisableCombat = v
+            if Config.Misc.PanicMode then Misc.SetPanicMode(true, false) end
+        end)
+        addPopupToggle(pop, "Hide Menu", function() return Config.Misc.PanicHideMenu end, function(v)
+            Config.Misc.PanicHideMenu = v
+            if Config.Misc.PanicMode then Misc.SetPanicMode(true, false) end
+        end)
+    end, 128)
+
+    UI.AddToggleWithConfig(secMisc, "Pass Door", function() return Config.Misc.PassDoor end, function(v)
+        Config.Misc.PassDoor = v
+        if v and Config.Misc.PassDoorMode == "Toggle" then
+            ToggleStates.PassDoor = true
+        elseif not v then
+            Misc.RestoreDoors()
+        end
+    end, function(pop)
+        UI._AddPopupKeybind(pop, "Pass Key", function() return Config.Misc.PassDoorKey end, function(k) Config.Misc.PassDoorKey = k end)
+        UI._AddPopupCycle(pop, "Mode", { "Always", "Hold", "Toggle" }, function() return Config.Misc.PassDoorMode end, function(v)
+            Config.Misc.PassDoorMode = v
+            if v == "Toggle" then
+                ToggleStates.PassDoor = true
+            end
+        end)
+        addPopupSlider(pop, "Phase Range", 6, 35, 1, "st", function() return Config.Misc.PassDoorRange end, function(v) Config.Misc.PassDoorRange = v end)
+        addPopupToggle(pop, "Auto Open Unlocked", function() return Config.Misc.PassDoorAutoOpen end, function(v) Config.Misc.PassDoorAutoOpen = v end)
+    end, 144)
+
+    UI.AddToggle(secMisc, "Screen Effects", function() return Config.Misc.ScreenEffects end, function(v)
+        Config.Misc.ScreenEffects = v
+        if not v then
+            Misc.RestoreScreenEffects()
+        end
+    end)
+
+    UI.AddToggleWithConfig(secMisc, "Report Notify", function() return Config.Misc.ReportNotify end, function(v)
+        Config.Misc.ReportNotify = v
+    end, function(pop)
+        addPopupToggle(pop, "Alert My Flags", function() return Config.Misc.ReportAlertSelf end, function(v) Config.Misc.ReportAlertSelf = v end)
+        addPopupToggle(pop, "Alert Server Flags", function() return Config.Misc.ReportAlertServer end, function(v) Config.Misc.ReportAlertServer = v end)
+    end, 72)
+
+    UI.AddToggleWithConfig(secMisc, "Join Notify", function() return Config.Misc.JoinNotify end, function(v)
+        Config.Misc.JoinNotify = v
+    end, function(pop)
+        addPopupToggle(pop, "Only Flagged / Staff", function() return Config.Misc.JoinAlertFlaggedOnly end, function(v) Config.Misc.JoinAlertFlaggedOnly = v end)
+        addPopupToggle(pop, "Leave Alerts", function() return Config.Misc.JoinLeaveAlerts end, function(v) Config.Misc.JoinLeaveAlerts = v end)
+        addPopupToggle(pop, "Show Account Age", function() return Config.Misc.JoinShowAge end, function(v) Config.Misc.JoinShowAge = v end)
+    end, 100)
+
+    local secDetect = UI.AddSection(MiscTab, "Right", "Detect")
+    local function addDetectItem(label: string, key: string, extraBuilder: ((Frame) -> ())?, popH: number?)
+        UI.AddToggleWithConfig(secDetect, label, function()
+            return (Config.Detect :: any)[key] == true
+        end, function(v)
+            (Config.Detect :: any)[key] = v
+            if v then
+                for _, p in ipairs(Players:GetPlayers()) do
+                    Misc.EvaluatePlayerDetect(p)
+                end
+            end
+        end, function(pop)
+            addPopupToggle(pop, "Notify Alert", function() return (Config.Detect :: any)[key .. "Notify"] == true end, function(v)
+                (Config.Detect :: any)[key .. "Notify"] = v
+            end)
+            addPopupToggle(pop, "ESP Badge", function() return (Config.Detect :: any)[key .. "Badge"] == true end, function(v)
+                (Config.Detect :: any)[key .. "Badge"] = v
+            end)
+            if extraBuilder then
+                extraBuilder(pop)
+            end
+        end, popH or 72)
+    end
+
+    addDetectItem("Content Creator", "ContentCreator")
+    addDetectItem("Tester", "Tester")
+    addDetectItem("Moderator", "Moderator")
+    addDetectItem("Cheater", "Cheater", function(pop)
+        addPopupSlider(pop, "Min Flags", 5, 100, 1, "", function() return Config.Detect.CheaterMinFlags end, function(v) Config.Detect.CheaterMinFlags = v end)
+        addPopupSlider(pop, "Min HSR", 40, 100, 5, "%", function() return Config.Detect.CheaterMinHSR end, function(v) Config.Detect.CheaterMinHSR = v end)
+        addPopupSlider(pop, "Min KDR", 1.5, 15.0, 0.5, "", function() return Config.Detect.CheaterMinKDR end, function(v) Config.Detect.CheaterMinKDR = v end)
+    end, 188)
+
+    local secVault = UI.AddSection(MiscTab, "Right", "Vault Sort")
+    UI.AddButton(secVault, "Sort By Value", "accent", function()
+        Misc.SortVaultByValue()
+    end)
+end
+
 -- ---- SETTINGS TAB ----
 do
     local secUI = UI.AddSection(SettingsTab, "Left", "Interface & HUD")
@@ -5127,7 +6358,7 @@ do
     end)
     UI.AddToggle(secUI, "Show Watermark", function() return Config.Settings.Watermark end, function(v)
         Config.Settings.Watermark = v
-        WatermarkFrame.Visible = v
+        WatermarkFrame.Visible = v and not (Config.Misc.PanicMode and Config.Misc.PanicHideVisuals)
     end)
     UI.AddToggle(secUI, "Target Info HUD", function() return Config.Settings.TargetHUD end, function(v) Config.Settings.TargetHUD = v end)
     UI.AddToggle(secUI, "Notifications", function() return Config.Settings.Notifications end, function(v) Config.Settings.Notifications = v end)
@@ -5140,6 +6371,11 @@ do
         Config.WeaponMods.NoSway = false
         Config.WeaponMods.FastADS = false
         Config.WeaponMods.NoScopeDOF = false
+        if Config.Misc.PanicMode then
+            Misc.SetPanicMode(false, false)
+        end
+        Misc.RestoreDoors()
+        Misc.RestoreScreenEffects()
         Combat.RestoreAllWeaponMods()
         World.RestoreAll()
         UI.RefreshAll()
@@ -5151,7 +6387,11 @@ do
             Config[k] = v
         end
         table.clear(ToggleStates)
+        table.clear(Misc._NotifiedDetect)
+        Misc._LastPanic = false
         Delta.ClearFriends()
+        Misc.RestoreDoors()
+        Misc.RestoreScreenEffects()
         Combat.RestoreAllWeaponMods()
         World.RestoreAll()
         WatermarkFrame.Visible = Config.Settings.Watermark
@@ -6033,6 +7273,11 @@ local function setMenuVisible(vis: boolean)
         UI.Preview.SyncVisibility()
     end
 end
+Misc._TargetHud = TargetHudFrame
+Misc._SetMenuVisible = setMenuVisible
+Misc._GetMenuVisible = function()
+    return WindowVisible
+end
 
 Session.Bind(MinBtn.MouseButton1Click, function()
     setMenuVisible(false)
@@ -6064,9 +7309,29 @@ Session.Bind(UserInputService.InputBegan, function(input: InputObject, gameProce
 
     KeyHoldStates[code] = true
 
+    if code ~= Enum.KeyCode.Unknown and code == Config.Misc.PanicKey then
+        Misc.SetPanicMode(not Config.Misc.PanicMode, true)
+        UI.RefreshAll()
+        return
+    end
+
     if code == Config.Settings.MenuKey then
         setMenuVisible(not WindowVisible)
         return
+    end
+
+    if code ~= Enum.KeyCode.Unknown and code == Config.Misc.PassDoorKey then
+        if Config.Misc.PassDoor and Config.Misc.PassDoorMode == "Toggle" then
+            ToggleStates.PassDoor = not (ToggleStates.PassDoor ~= false)
+            UI.Notify("Pass Door", ToggleStates.PassDoor and "Engaged" or "Standby", ToggleStates.PassDoor and "success" or "info")
+        elseif Config.Misc.PassDoorMode == "Always" then
+            Config.Misc.PassDoor = not Config.Misc.PassDoor
+            if not Config.Misc.PassDoor then
+                Misc.RestoreDoors()
+            end
+            UI.RefreshAll()
+            UI.Notify("Pass Door", Config.Misc.PassDoor and "Enabled" or "Disabled", Config.Misc.PassDoor and "success" or "info")
+        end
     end
 
     if code ~= Enum.KeyCode.Unknown and code == Config.Aimbot.Key then
@@ -6123,16 +7388,27 @@ Session.Bind(RunService.RenderStepped, function(dt: number)
         return
     end
 
+    -- Misc subsystem (Panic Sync, Pass Door, Fast Trade, Screen Effects)
+    Misc.Step()
+
     -- Combat loops
     stepAimbot(dt)
     stepTriggerBot()
 
+    local panicHideVis = Config.Misc.PanicMode and Config.Misc.PanicHideVisuals
+    local panicDisableCombat = Config.Misc.PanicMode and Config.Misc.PanicDisableCombat
+
     -- World & FOV
-    World.Step()
+    World.Step(panicHideVis)
+
+    if panicHideVis then
+        Misc._HideAllVisualsNow()
+        return
+    end
 
     -- FOV Circle
     if FOVCircle then
-        if Config.Aimbot.ShowFOV and (Config.Aimbot.Enabled or Config.SilentAim.Enabled) then
+        if Config.Aimbot.ShowFOV and not panicDisableCombat and (Config.Aimbot.Enabled or Config.SilentAim.Enabled) then
             local fovPos = Targeting.GetAimOrigin2D()
             local fovRad = Targeting.GetEffectiveFOVRadius()
             if FOVCircleOutline then
@@ -6152,6 +7428,50 @@ Session.Bind(RunService.RenderStepped, function(dt: number)
             end
             FOVCircle.Visible = false
         end
+    end
+
+    -- Silent Aim Target Indicator Line & Lock Dot
+    if Config.SilentAim.Enabled and Config.SilentAim.TargetLine and not panicDisableCombat
+        and isModeActive("SilentAim", Config.SilentAim.Enabled, Config.SilentAim.Mode, Config.SilentAim.Key)
+    then
+        local st = ActiveLockedTarget
+        if Config.Aimbot.Enabled and isModeActive("Aimbot", Config.Aimbot.Enabled, Config.Aimbot.Mode, Config.Aimbot.Key) and Combat._FindSilentTarget then
+            st = Combat._FindSilentTarget(Delta.GetShotOrigin(), false)
+        end
+        if st and st.Model.Parent then
+            local predWorld = Delta.PredictAimPosition(
+                Delta.GetShotOrigin(),
+                st.Part,
+                Config.SilentAim.Prediction,
+                Config.SilentAim.DropComp,
+                nil,
+                st.AimPointWorld
+            )
+            local sp, onScr = cam:WorldToViewportPoint(predWorld)
+            if onScr then
+                local pt2d = Vector2.new(sp.X, sp.Y)
+                if Combat._SilentLine then
+                    Combat._SilentLine.From = Targeting.GetAimOrigin2D()
+                    Combat._SilentLine.To = pt2d
+                    Combat._SilentLine.Color = Config.Aimbot.FOVColor
+                    Combat._SilentLine.Visible = true
+                end
+                if Combat._SilentDot then
+                    Combat._SilentDot.Position = pt2d
+                    Combat._SilentDot.Color = Config.Aimbot.FOVColor
+                    Combat._SilentDot.Visible = true
+                end
+            else
+                if Combat._SilentLine then Combat._SilentLine.Visible = false end
+                if Combat._SilentDot then Combat._SilentDot.Visible = false end
+            end
+        else
+            if Combat._SilentLine then Combat._SilentLine.Visible = false end
+            if Combat._SilentDot then Combat._SilentDot.Visible = false end
+        end
+    else
+        if Combat._SilentLine then Combat._SilentLine.Visible = false end
+        if Combat._SilentDot then Combat._SilentDot.Visible = false end
     end
 
     -- ESP Renders
@@ -6194,4 +7514,4 @@ Session.Bind(RunService.RenderStepped, function(dt: number)
     end
 end)
 
-UI.Notify("Delta Suite Loaded", "Combat & Visuals active for Project Delta.", "success")
+UI.Notify("Delta Suite Loaded", "Combat, Visuals & Misc active for Project Delta.", "success")

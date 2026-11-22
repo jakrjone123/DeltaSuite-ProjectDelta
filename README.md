@@ -23,14 +23,14 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/jakrjone123/DeltaSuit
   - **Weapon Mods**: No Recoil (`RecoilPattern`, `VFX.RecoilCamera`, `SettingsModule` y `springs`), No Spread (`AccuracyDeviation`), No Sway, Fast ADS y Disable Scope DOF con restauración limpia.
   - **TriggerBot** con retardo configurable y filtro ADS/Equipo/AI.
 - **Visuals (ESP por categoría con panel de filtros)**
-  - **Player**: `Highlights`, `Box`, `Name`, `HealthBar`, `Health`, `Distance`, `KDR`, `Reports`, `Tracers`, `Arrows` (fuera de pantalla), `Skeleton`, `Held Weapon`, `Downed Badge`, filtros de escuadra y colores.
+  - **Player**: `Highlights`, `Box`, `Name`, `HealthBar`, `Health`, `Distance`, `KDR`, `Check Reports` (severidad visual por colores `Rep` / `[!] REP` / `[BANNING]`), `Tracers`, `Arrows` (fuera de pantalla), `Skeleton`, `Held Weapon`, `Downed Badge`, filtros de escuadra y colores.
   - **Npc**: `Highlight`, `Box`, `Name`, `HealthBar`, `Health`, `Distance`, `Tracers`, `Arrows`, `Skeleton`, `Held Weapon`, colores NPC/Boss.
   - **Corpse**: `Chams`, `Box`, `Name`, `Distance`, `Value`, `Tracers`, `Arrows`, `Skeleton`, ocultar vacíos.
   - **Container**: `Chams`, `Box`, `Name`, `Distance`, `Value`, `Respawn`, `Tracers`, `Arrows`, ocultar vacíos y filtro por valor mínimo.
   - **Dropped Item**: `Chams`, `Box`, `Name`, `Distance`, `Value`, `Tracers`, `Arrows`, filtro por valor mínimo.
   - **Quest Items**: `Chams`, `Box`, `Name`, `Distance`, `Tracers`, `Arrows`.
   - **PREVIEW interactivo en las 6 categorías ESP**:
-    - **Player y Npc**: Muñeco 3D lateral con overlays en tiempo real; permite arrastrar y apilar etiquetas (`Name`, `Health`, `Distance`, `Weapon`, `KDR`, `Reports`, `Downed`) y la barra `HealthBar` exclusivamente entre **Arriba**, **Abajo**, **Izquierda** y **Derecha**.
+    - **Player y Npc**: Modelo 3D táctico articulado (`TacticalOperator`) con casco, visor, chaleco modular, carabina y proyección exacta de esqueleto en tiempo real; permite arrastrar y apilar etiquetas (`Name`, `Health`, `Distance`, `Weapon`, `KDR`, `Reports`, `Downed`) y la barra `HealthBar` exclusivamente entre **Arriba**, **Abajo**, **Izquierda** y **Derecha**.
     - **Corpse, Container, Dropped Item y Quest Items**: Cubo 3D táctico lateral con soporte en vivo de `Chams`, `Box`/`Corner` con relleno translúcido, `Skeleton` (Corpse), `Tracers`, `Arrows` y arrastre ordenado de etiquetas (`Name`, `Distance`, `Value`, `Respawn`) entre las 4 zonas.
   - **World & Vision**: Ajustes rápidos de iluminación y visión.
 - **World**
@@ -38,8 +38,9 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/jakrjone123/DeltaSuit
   - **Features**: `Render Players`, `Boss Checker` (detección de bosses/eventos en vivo con alertas y barra HUD), `ExitLocations` (distancia, color, temporizador y tracers) y `Radar` táctico 2D rotatorio en tiempo real (jugadores, NPC/Boss, cadáveres y extracciones).
   - **Lighting**: 10 controles modulares con popovers independientes (`Light`, `Time & Sun`, `Shadows`, `Rendering`, `Fog`, `Atmosphere`, `Sky`, `Clouds`, `Bloom` y `Blur`) con respaldo y restauración completa.
 - **Misc**
-  - **Misc**: `Fast Trade` (desbloquea validación y botones `Confirm`/`Exchange`), `Panic Mode` (`End` por defecto, con popover `Panic Key` / `Hide Visuals` / `Disable Combat` / `Hide Menu`), `Pass Door` (traspasar puertas dentro de rango + popover `Pass Key` / `Mode` / `Phase Range` / `Auto Open Unlocked`), `Screen Effects` (oculta flashbang/ear-ringing/visor/daño manteniendo pantallas de muerte y miras), `Report Notify` (`UAC.Reports` y `ReportList.Recent`), y `Join Notify` (entradas/salidas con antigüedad y banderas).
+  - **Misc**: `Fast Trade` (desbloquea validación y botones `Confirm`/`Exchange`), `Panic Mode` (`End` por defecto, con popover `Panic Key` / `Hide Visuals` / `Disable Combat` / `Hide Menu`), `Pass Door` (traspasar puertas dentro de rango + popover `Pass Key` / `Mode` / `Phase Range` / `Auto Open Unlocked`), `Screen Effects` (oculta flashbang/ear-ringing/visor/daño manteniendo pantallas de muerte y miras), `Report Notify` (alertas UAC en vivo con estabilización tras replicación para evitar falsos positivos), y `Join Notify` (entradas/salidas con antigüedad y banderas).
   - **Detect**: detección automática de `Content Creator` (`[CC]`), `Tester` (`[TESTER]`), `Moderator` (`[MOD]`, rango grupo Project Delta + `ChatTags`) y `Cheater` (`[CHEATER]` por `TotalFlags` / `HSR` / `KDR`), con popover independiente para `Notify Alert`, `ESP Badge` y umbrales.
+  - **Check Reports**: escáner en vivo y HUD flotante arrastrable (`Reports HUD` + `Scan Server Reports`) ordenado por reportes totales en la partida, con filtro `Flagged` / `All`, KDR y distancia.
   - **Vault Sort**: botón `Sort By Value` para valorar `VaultStorage.Inventory` (incluidos rublos, objetos anidados y llaves) y ordenar ranuras por valor descendente.
 - **Settings**
   - **Config Manager**: guardado, carga, listado dinámico de perfiles en disco (`DeltaSuite/configs/*.json` con respaldo en memoria), `Auto Load Selected` (`DeltaSuite/autoload.txt`) y eliminación segura (serializando colores `Color3`, keybinds `EnumItem`, layouts y filtros).

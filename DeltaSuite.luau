@@ -6118,7 +6118,7 @@ end)()
     local repHud = Instance.new("Frame")
     repHud.Name = "ServerReportsHUD"
     repHud.AnchorPoint = Vector2.new(1, 0)
-    repHud.Position = UDim2.new(1, -16, 0, 114)
+    repHud.Position = UDim2.new(1, -92, 0, 114)
     repHud.Size = UDim2.fromOffset(310, 212)
     repHud.BackgroundColor3 = THEME.BgMain
     repHud.BackgroundTransparency = 0.22
@@ -6178,7 +6178,7 @@ end)()
     rhScroll.BorderSizePixel = 0
     rhScroll.ScrollBarThickness = 3
     rhScroll.ScrollBarImageColor3 = THEME.Border
-    rhScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    rhScroll.AutomaticCanvasSize = Enum.AutomaticSize.None
     rhScroll.CanvasSize = UDim2.fromOffset(0, 0)
     rhScroll.Parent = repHud
 
@@ -6216,8 +6216,81 @@ end)()
         end
     end)
 
-    local lastSig = ""
-    local rowObjs: { Instance } = {}
+    type ReportRowSlot = {
+        Row: Frame,
+        Badge: TextLabel,
+        Name: TextLabel,
+        Meta: TextLabel,
+        LastOrder: number,
+        LastBadgeText: string,
+        LastMetaText: string,
+        LastNameText: string,
+    }
+    local rowPool: { [number]: ReportRowSlot } = {}
+    local lastVisibleRows = -1
+    local lastHudSig = ""
+
+    local emptyLbl = Instance.new("TextLabel")
+    emptyLbl.Size = UDim2.new(1, 0, 0, 32)
+    emptyLbl.BackgroundTransparency = 1
+    emptyLbl.Font = Enum.Font.GothamMedium
+    emptyLbl.TextSize = 11
+    emptyLbl.TextColor3 = THEME.TextSecondary
+    emptyLbl.Text = "No reported players in this server."
+    emptyLbl.Visible = false
+    emptyLbl.Parent = rhScroll
+
+    local function createReportRowSlot(uid: number): ReportRowSlot
+        local row = Instance.new("Frame")
+        row.Size = UDim2.new(1, -2, 0, 24)
+        row.BackgroundColor3 = THEME.BgControl
+        row.BackgroundTransparency = 0.25
+        row.Visible = false
+        row.Parent = rhScroll
+        addCorner(row, 4)
+
+        local badge = Instance.new("TextLabel")
+        badge.Size = UDim2.fromOffset(36, 18)
+        badge.Position = UDim2.fromOffset(4, 3)
+        badge.BackgroundTransparency = 0.15
+        badge.Font = Enum.Font.GothamBold
+        badge.TextSize = 10
+        badge.TextColor3 = Color3.fromRGB(10, 12, 18)
+        badge.Parent = row
+        addCorner(badge, 4)
+
+        local nameLbl = Instance.new("TextLabel")
+        nameLbl.BackgroundTransparency = 1
+        nameLbl.Position = UDim2.fromOffset(46, 0)
+        nameLbl.Size = UDim2.new(1, -138, 1, 0)
+        nameLbl.TextSize = 11
+        nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+        nameLbl.TextTruncate = Enum.TextTruncate.AtEnd
+        nameLbl.Parent = row
+
+        local metaLbl = Instance.new("TextLabel")
+        metaLbl.BackgroundTransparency = 1
+        metaLbl.Position = UDim2.new(1, -90, 0, 0)
+        metaLbl.Size = UDim2.fromOffset(84, 24)
+        metaLbl.Font = Enum.Font.Gotham
+        metaLbl.TextSize = 10
+        metaLbl.TextColor3 = THEME.TextSecondary
+        metaLbl.TextXAlignment = Enum.TextXAlignment.Right
+        metaLbl.Parent = row
+
+        local slot: ReportRowSlot = {
+            Row = row,
+            Badge = badge,
+            Name = nameLbl,
+            Meta = metaLbl,
+            LastOrder = -1,
+            LastBadgeText = "",
+            LastMetaText = "",
+            LastNameText = "",
+        }
+        rowPool[uid] = slot
+        return slot
+    end
 
     local function severityForReport(flags: number, banning: boolean): (Color3, string)
         if banning then
@@ -6241,12 +6314,18 @@ end)()
         end
 
         local cam = Workspace.CurrentCamera
-        local myPos = cam and cam.CFrame.Position
+        local lpChar = LocalPlayer.Character
+        local lpRoot = lpChar and lpChar:FindFirstChild("HumanoidRootPart")
+        local myPos = (lpRoot and lpRoot:IsA("BasePart") and lpRoot.Position) or (cam and cam.CFrame.Position)
+
         local rows = {}
+        local seenUids: { [number]: boolean } = {}
+        local activePlrs: { [number]: boolean } = {}
         local flaggedCount = 0
         local totalCount = 0
         for _, plr in ipairs(Players:GetPlayers()) do
             totalCount += 1
+            activePlrs[plr.UserId] = true
             local kdrStr, repCount, isBan = Delta.GetPlayerMeta(plr)
             local flags = repCount or 0
             if flags > 0 or isBan then
@@ -6273,91 +6352,88 @@ end)()
         table.sort(rows, function(a, b)
             if a.Ban ~= b.Ban then return a.Ban end
             if a.Flags ~= b.Flags then return a.Flags > b.Flags end
-            return a.Player.Name:lower() < b.Player.Name:lower()
+            local an, bn = a.Player.Name:lower(), b.Player.Name:lower()
+            if an ~= bn then return an < bn end
+            return a.Player.UserId < b.Player.UserId
         end)
 
-        rhTitle.Text = string.format("CHECK REPORTS  •  %d/%d Flagged", flaggedCount, totalCount)
-        rhFilterBtn.Text = Misc._ShowCleanInReportsHud and "All" or "Flagged"
+        local titleStr = string.format("CHECK REPORTS  •  %d/%d Flagged", flaggedCount, totalCount)
+        if rhTitle.Text ~= titleStr then
+            rhTitle.Text = titleStr
+        end
+        local filterStr = Misc._ShowCleanInReportsHud and "All" or "Flagged"
+        if rhFilterBtn.Text ~= filterStr then
+            rhFilterBtn.Text = filterStr
+        end
 
-        local sigParts = { rhTitle.Text, rhFilterBtn.Text }
+        -- Clean up disconnected players from pool
+        for uid, slot in pairs(rowPool) do
+            if not activePlrs[uid] then
+                slot.Row:Destroy()
+                rowPool[uid] = nil
+            end
+        end
+
+        local sigParts = { titleStr, filterStr }
         for _, r in ipairs(rows) do
-            table.insert(sigParts, string.format("%d:%d:%s:%s", r.Player.UserId, r.Flags, r.Ban and "1" or "0", r.Dist))
+            table.insert(sigParts, string.format("%d:%d:%s:%s:%s", r.Player.UserId, r.Flags, r.Ban and "1" or "0", r.KDR, r.Dist))
         end
         local sig = table.concat(sigParts, "|")
-        if not forceBuild and sig == lastSig then
+        if not forceBuild and sig == lastHudSig then
             return
         end
-        lastSig = sig
+        lastHudSig = sig
 
-        for _, obj in ipairs(rowObjs) do
-            obj:Destroy()
-        end
-        table.clear(rowObjs)
+        emptyLbl.Visible = (#rows == 0)
 
-        if #rows == 0 then
-            local emptyLbl = Instance.new("TextLabel")
-            emptyLbl.Size = UDim2.new(1, 0, 0, 32)
-            emptyLbl.BackgroundTransparency = 1
-            emptyLbl.Font = Enum.Font.GothamMedium
-            emptyLbl.TextSize = 11
-            emptyLbl.TextColor3 = THEME.TextSecondary
-            emptyLbl.Text = "No reported players in this server."
-            emptyLbl.Parent = rhScroll
-            table.insert(rowObjs, emptyLbl)
-            repHud.Size = UDim2.fromOffset(310, 74)
-            return
-        end
-
+        -- Update existing persistent rows in-place (zero Destroy/re-create flicker when distance changes!)
         for i, r in ipairs(rows) do
-            local row = Instance.new("Frame")
-            row.LayoutOrder = i
-            row.Size = UDim2.new(1, -2, 0, 24)
-            row.BackgroundColor3 = THEME.BgControl
-            row.BackgroundTransparency = 0.25
-            row.Parent = rhScroll
-            addCorner(row, 4)
+            local uid = r.Player.UserId
+            seenUids[uid] = true
+            local slot = rowPool[uid] or createReportRowSlot(uid)
+            if slot.LastOrder ~= i then
+                slot.Row.LayoutOrder = i
+                slot.LastOrder = i
+            end
 
             local badgeCol, badgeText = severityForReport(r.Flags, r.Ban)
-            local badge = Instance.new("TextLabel")
-            badge.Size = UDim2.fromOffset(36, 18)
-            badge.Position = UDim2.fromOffset(4, 3)
-            badge.BackgroundColor3 = badgeCol
-            badge.BackgroundTransparency = 0.15
-            badge.Font = Enum.Font.GothamBold
-            badge.TextSize = 10
-            badge.TextColor3 = Color3.fromRGB(10, 12, 18)
-            badge.Text = badgeText
-            badge.Parent = row
-            addCorner(badge, 4)
+            if slot.LastBadgeText ~= badgeText then
+                slot.Badge.Text = badgeText
+                slot.LastBadgeText = badgeText
+            end
+            slot.Badge.BackgroundColor3 = badgeCol
 
-            local nameLbl = Instance.new("TextLabel")
-            nameLbl.BackgroundTransparency = 1
-            nameLbl.Position = UDim2.fromOffset(46, 0)
-            nameLbl.Size = UDim2.new(1, -138, 1, 0)
-            nameLbl.Font = r.Flags > 0 and Enum.Font.GothamBold or Enum.Font.GothamMedium
-            nameLbl.TextSize = 11
-            nameLbl.TextColor3 = r.IsSelf and THEME.Accent or (r.Flags > 0 and badgeCol or THEME.TextPrimary)
-            nameLbl.TextXAlignment = Enum.TextXAlignment.Left
-            nameLbl.TextTruncate = Enum.TextTruncate.AtEnd
-            nameLbl.Text = r.Player.DisplayName .. (r.IsSelf and " (You)" or "")
-            nameLbl.Parent = row
+            local dispName = r.Player.DisplayName .. (r.IsSelf and " (You)" or "")
+            if slot.LastNameText ~= dispName then
+                slot.Name.Text = dispName
+                slot.LastNameText = dispName
+            end
+            slot.Name.Font = (r.Flags > 0) and Enum.Font.GothamBold or Enum.Font.GothamMedium
+            slot.Name.TextColor3 = r.IsSelf and THEME.Accent or ((r.Flags > 0) and badgeCol or THEME.TextPrimary)
 
-            local metaLbl = Instance.new("TextLabel")
-            metaLbl.BackgroundTransparency = 1
-            metaLbl.Position = UDim2.new(1, -90, 0, 0)
-            metaLbl.Size = UDim2.fromOffset(84, 24)
-            metaLbl.Font = Enum.Font.Gotham
-            metaLbl.TextSize = 10
-            metaLbl.TextColor3 = THEME.TextSecondary
-            metaLbl.TextXAlignment = Enum.TextXAlignment.Right
-            metaLbl.Text = string.format("KD:%s  %s", r.KDR, r.Dist)
-            metaLbl.Parent = row
-
-            table.insert(rowObjs, row)
+            local metaText = string.format("KD:%s  %s", r.KDR, r.Dist)
+            if slot.LastMetaText ~= metaText then
+                slot.Meta.Text = metaText
+                slot.LastMetaText = metaText
+            end
+            if not slot.Row.Visible then
+                slot.Row.Visible = true
+            end
         end
 
-        local targetH = math.clamp(38 + #rows * 28, 86, 260)
-        repHud.Size = UDim2.fromOffset(310, targetH)
+        for uid, slot in pairs(rowPool) do
+            if not seenUids[uid] and slot.Row.Visible then
+                slot.Row.Visible = false
+            end
+        end
+
+        local contentH = (#rows > 0) and (#rows * 28 - 4) or 32
+        rhScroll.CanvasSize = UDim2.fromOffset(0, contentH)
+        if forceBuild or lastVisibleRows ~= #rows then
+            lastVisibleRows = #rows
+            local targetH = (#rows == 0) and 74 or math.clamp(38 + #rows * 28, 86, 260)
+            repHud.Size = UDim2.fromOffset(310, targetH)
+        end
     end
 
     Session.Bind(rhFilterBtn.MouseButton1Click, function()
@@ -8758,9 +8834,16 @@ do
     UI.AddToggleWithConfig(secMisc, "Report Notify", function() return Config.Misc.ReportNotify end, function(v)
         Config.Misc.ReportNotify = v
     end, function(pop)
+        addPopupToggle(pop, "Check Reports HUD", function() return Config.Misc.ReportsHUD end, function(v)
+            Config.Misc.ReportsHUD = v
+            if Misc.RefreshReportsHud then
+                Misc.RefreshReportsHud(true)
+            end
+            UI.RefreshAll()
+        end)
         addPopupToggle(pop, "Alert My Flags", function() return Config.Misc.ReportAlertSelf end, function(v) Config.Misc.ReportAlertSelf = v end)
         addPopupToggle(pop, "Alert Server Flags", function() return Config.Misc.ReportAlertServer end, function(v) Config.Misc.ReportAlertServer = v end)
-    end, 72)
+    end, 100)
 
     UI.AddToggleWithConfig(secMisc, "Join Notify", function() return Config.Misc.JoinNotify end, function(v)
         Config.Misc.JoinNotify = v

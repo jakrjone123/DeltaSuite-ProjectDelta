@@ -9444,13 +9444,46 @@ do
         UI.AddColorPicker(p, "Quest Color", function() return Config.QuestESP.Color end, function(c) Config.QuestESP.Color = c end)
     end
 
-    local secMap = UI.AddSection(VisualsTab, "Left", "Map")
-    UI.AddToggleWithConfig(secMap, "Map HUD", function() return Config.Map.Enabled end, function(v)
+    function World._SetMapEnabled(v: boolean)
         Config.Map.Enabled = v
         if not v and World.HideMapHud then
             World.HideMapHud()
+        elseif v and World.UpdateMapHud then
+            World.UpdateMapHud()
         end
-    end, function(pop)
+        UI.RefreshAll()
+    end
+
+    function World._BuildMapPopover(pop: Frame, includeInline: boolean?)
+        if includeInline then
+            addPopupToggle(pop, "Show Players", function() return Config.Map.ShowPlayers end, function(v)
+                Config.Map.ShowPlayers = v
+                UI.RefreshAll()
+            end)
+            addPopupToggle(pop, "Player Names", function() return Config.Map.ShowNames end, function(v)
+                Config.Map.ShowNames = v
+                UI.RefreshAll()
+            end)
+            addPopupToggle(pop, "Show Distance", function() return Config.Map.ShowDistance end, function(v)
+                Config.Map.ShowDistance = v
+                UI.RefreshAll()
+            end)
+            addPopupToggle(pop, "Follow Player", function() return Config.Map.FollowMe end, function(v)
+                Config.Map.FollowMe = v
+                if v and (Config.Map.Zoom or 1) < 1.2 then
+                    Config.Map.Zoom = 2.0
+                end
+                UI.RefreshAll()
+            end)
+            addPopupSlider(pop, "Map Zoom", 1.0, 4.0, 0.2, "x", function() return Config.Map.Zoom end, function(v)
+                Config.Map.Zoom = v
+                UI.RefreshAll()
+            end)
+            addPopupSlider(pop, "Map Size", 180, 420, 10, "px", function() return Config.Map.Size end, function(v)
+                Config.Map.Size = v
+                UI.RefreshAll()
+            end)
+        end
         addPopupToggle(pop, "Overlay Game Map (M)", function() return Config.Map.OverlayNative end, function(v) Config.Map.OverlayNative = v end)
         addPopupToggle(pop, "Show Self", function() return Config.Map.ShowSelf end, function(v) Config.Map.ShowSelf = v end)
         addPopupToggle(pop, "Show NPC / Boss", function() return Config.Map.ShowAI end, function(v) Config.Map.ShowAI = v end)
@@ -9461,6 +9494,11 @@ do
         UI._AddPopupColorPicker(pop, "Enemy Dot Color", function() return Config.Map.EnemyColor end, function(c) Config.Map.EnemyColor = c end)
         UI._AddPopupColorPicker(pop, "Squad Dot Color", function() return Config.Map.SquadColor end, function(c) Config.Map.SquadColor = c end)
         UI._AddPopupColorPicker(pop, "Friend Dot Color", function() return Config.Map.FriendColor end, function(c) Config.Map.FriendColor = c end)
+    end
+
+    local secMap = UI.AddSection(VisualsTab, "Left", "Map")
+    UI.AddToggleWithConfig(secMap, "Map HUD", function() return Config.Map.Enabled end, World._SetMapEnabled, function(pop)
+        World._BuildMapPopover(pop, false)
     end)
     UI.AddToggle(secMap, "Show Players", function() return Config.Map.ShowPlayers end, function(v) Config.Map.ShowPlayers = v end)
     UI.AddToggle(secMap, "Player Names", function() return Config.Map.ShowNames end, function(v) Config.Map.ShowNames = v end)
@@ -9609,6 +9647,10 @@ end
         addPopupToggle(pop, "Show Exits", function() return Config.World.RadarExits end, function(v) Config.World.RadarExits = v end)
         addPopupSlider(pop, "Position X", 8, 900, 8, "px", function() return Config.World.RadarX end, function(v) Config.World.RadarX = v end)
         addPopupSlider(pop, "Position Y", 8, 700, 8, "px", function() return Config.World.RadarY end, function(v) Config.World.RadarY = v end)
+    end)
+
+    UI.AddToggleWithConfig(secFeat, "Map", function() return Config.Map.Enabled end, World._SetMapEnabled, function(pop)
+        World._BuildMapPopover(pop, true)
     end)
 
     local secLight = UI.AddSection(worldTab, "Right", "Lighting")

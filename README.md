@@ -25,7 +25,8 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/jakrjone123/DeltaSuit
 - **Visuals (ESP por categoría con panel de filtros)**
   - **Player**: `Highlights`, `Box`, `Name`, `HealthBar`, `Health`, `Distance`, `KDR` (calculado desde `Status.Journey.Statistics`, igual que `ReportGui`), `Check Reports` (severidad visual por colores `Rep` / `[!] REP` / `[BANNING]`), `Tracers`, `Arrows` (fuera de pantalla), `Skeleton`, `Held Weapon`, `Downed Badge`, filtros de escuadra y colores.
   - **Npc**: `Highlight`, `Box`, `Name`, `HealthBar`, `Health`, `Distance`, `Tracers`, `Arrows`, `Skeleton`, `Held Weapon`, colores NPC/Boss.
-  - **Corpse**: `Chams`, `Box`, `Name`, `Distance`, `Value`, `Tracers`, `Arrows`, `Skeleton`, ocultar vacíos.
+  - **Corpse**: `Chams`, `Box`, `Name`, `Distance`, `Value`, `Tracers`, `Arrows`, `Skeleton`, detección unificada (`Corpses`, `Bodies`, `Ragdolls`, `Dead`, `DroppedItems`, `Workspace` y cuerpos tras muerte con actualización tardía de inventario y `HideEmpty` desactivado por defecto).
+  - **Estabilidad ESP y Mapa**: limpieza inmediata al morir (`Humanoid.Died` + `IsPlayerDead`), protección anti-`NaN`/desconexión de partes y filtrado estricto de jugadores vivos (`IsLiveWorldCharacter`) para evitar puntos fantasma en el mapa.
   - **Container**: `Chams`, `Box`, `Name`, `Distance`, `Value`, `Respawn`, `Tracers`, `Arrows`, ocultar vacíos y filtro por valor mínimo.
   - **Dropped Item**: `Chams`, `Box`, `Name`, `Distance`, `Value`, `Tracers`, `Arrows`, filtro por valor mínimo.
   - **Quest Items**: `Chams`, `Box`, `Name`, `Distance`, `Tracers`, `Arrows`.

@@ -19,8 +19,6 @@ local Workspace = game:GetService("Workspace")
 local CoreGui = game:GetService("CoreGui")
 local Stats = game:GetService("Stats")
 
-local LocalPlayer = Players.LocalPlayer
-
 local function getEnv(): { [string]: any }
     local ok, env = pcall(getgenv)
     if ok and type(env) == "table" then
@@ -30,6 +28,13 @@ local function getEnv(): { [string]: any }
 end
 
 local Env = getEnv()
+Env.__DeltaSuiteBootT0 = os.clock()
+
+local LocalPlayer = Players.LocalPlayer
+while not LocalPlayer and (os.clock() - Env.__DeltaSuiteBootT0) < 2.5 do
+    task.wait(0.05)
+    LocalPlayer = Players.LocalPlayer
+end
 
 -- Clean up prior standalone instance if executed outside Mist RUN lifecycle
 if type(rawget(Env, "__DeltaSuiteStop")) == "function" then
@@ -4640,10 +4645,12 @@ Combat._SilentFOV = newDraw("Circle", { Thickness = 1.4, NumSides = 72, Filled =
 end)()
 
 -- Connect Workspace & Players Event Listeners cleanly
+local BoundPlayers: { [Player]: boolean } = {}
 local function bindPlayerTracking(player: Player)
-    if player == LocalPlayer then
+    if player == LocalPlayer or BoundPlayers[player] then
         return
     end
+    BoundPlayers[player] = true
     if player.Character then
         task.defer(registerActor, player.Character, player, false)
     end
@@ -4749,9 +4756,34 @@ for _, wsChild in ipairs(Workspace:GetChildren()) do
 end
 Session.Bind(Workspace.ChildAdded, hookWorkspaceFolder)
 
+function World._RescanStartup()
+    for _, p in ipairs(Players:GetPlayers()) do
+        bindPlayerTracking(p)
+        if p ~= LocalPlayer and p.Character and p.Character.Parent and not Actors[p.Character] then
+            registerActor(p.Character, p, false)
+        end
+    end
+    for _, wsChild in ipairs(Workspace:GetChildren()) do
+        hookWorkspaceFolder(wsChild)
+        if wsChild.Name == "AiZones" then
+            for _, zone in ipairs(wsChild:GetChildren()) do
+                for _, npc in ipairs(zone:GetChildren()) do
+                    if npc:IsA("Model") and not Actors[npc] then
+                        registerActor(npc, nil, true)
+                    end
+                end
+            end
+        end
+    end
+    if Misc.InitListeners then
+        pcall(Misc.InitListeners)
+    end
+end
+
 -- ============================================================================
 -- 8B. MISC, DETECT & VAULT SORT SUBSYSTEM
 -- ============================================================================
+Misc._BootComplete = false
 Misc._GroupId = 3765739
 Misc._OwnerId = 17953224
 Misc._Doors = {} :: { [Model]: { Parts: { BasePart }, LastAutoOpen: number } }
@@ -6584,7 +6616,7 @@ end)()
     mapHud.BackgroundColor3 = THEME.BgMain
     mapHud.BackgroundTransparency = 0.22
     mapHud.ClipsDescendants = true
-    mapHud.Visible = true
+    mapHud.Visible = false
     mapHud.ZIndex = 12
     mapHud.Parent = ScreenGui
     addCorner(mapHud, 8)
@@ -7077,6 +7109,10 @@ end)()
     end
 
     function World.UpdateMapHud(_vp: Vector2?)
+        if not Misc._BootComplete then
+            World.HideMapHud()
+            return
+        end
         local cfg = Config.Map
         if not cfg or not cfg.Enabled or (Config.Misc.PanicMode and Config.Misc.PanicHideVisuals) then
             World.HideMapHud()
@@ -11162,6 +11198,9 @@ local fpsAccum, fpsFrames, displayFps = 0, 0, 60
 local lastWmUpdate = 0
 
 Session.Bind(RunService.RenderStepped, function(dt: number)
+    if not Misc._BootComplete then
+        return
+    end
     local cam = Workspace.CurrentCamera
     if not cam then
         return
@@ -11310,7 +11349,7 @@ end)
 -- Post-Camera ESP & Radar step: runs AFTER game/camera controllers so rotations never lag or leave stuck parts
 pcall(RunService.UnbindFromRenderStep, RunService, "DeltaSuiteESP")
 RunService:BindToRenderStep("DeltaSuiteESP", Enum.RenderPriority.Last.Value, function()
-    if not Session.IsAlive() then
+    if not Session.IsAlive() or not Misc._BootComplete then
         return
     end
     if Config.Misc.PanicMode and Config.Misc.PanicHideVisuals then
@@ -11370,14 +11409,16 @@ Session.OnStop(function()
 end)
 
 ConfigMgr._ApplyUI = function()
-    WatermarkFrame.Visible = Config.Settings.Watermark and not (Config.Misc.PanicMode and Config.Misc.PanicHideVisuals)
+    WatermarkFrame.Visible = (Misc._BootComplete == true) and Config.Settings.Watermark and not (Config.Misc.PanicMode and Config.Misc.PanicHideVisuals)
     SideFooter.Text = formatBindName(Config.Settings.MenuKey) .. " to Toggle"
     UI.ApplyGlassTheme()
     UI.RefreshAll()
-    if Misc.RefreshReportsHud then
+    if Misc._BootComplete and Misc.RefreshReportsHud then
         Misc.RefreshReportsHud(true)
+    elseif Misc._ReportsHud then
+        (Misc._ReportsHud :: GuiObject).Visible = false
     end
-    if World.UpdateMapHud then
+    if Misc._BootComplete and World.UpdateMapHud then
         World.UpdateMapHud()
     end
     if type(UI.Preview.Refresh) == "function" then
@@ -11385,9 +11426,214 @@ ConfigMgr._ApplyUI = function()
     end
 end
 
-UI.ApplyGlassTheme()
-ConfigMgr.TryAutoLoad()
-if World.UpdateMapHud then
-    pcall(World.UpdateMapHud)
-end
-UI.Notify("Delta Suite Loaded", "Combat, Visuals, World & Misc active for Project Delta.", "success")
+-- Bounded startup loader (<= 5.0s max): waits for replication & runs multi-pass option refresh cleanly
+;(function()
+    local MIN_LOAD_SEC = 2.8
+    local MAX_LOAD_SEC = 4.5
+    local bootT0 = tonumber(Env.__DeltaSuiteBootT0) or os.clock()
+
+    Misc._BootComplete = false
+    MainWindow.Visible = false
+    WatermarkFrame.Visible = false
+    TargetHudFrame.Visible = false
+    if Misc._HideAllVisualsNow then
+        Misc._HideAllVisualsNow()
+    end
+
+    local splash = Instance.new("Frame")
+    splash.Name = "DeltaLoaderSplash"
+    splash.AnchorPoint = Vector2.new(0.5, 0.5)
+    splash.Position = UDim2.fromScale(0.5, 0.5)
+    splash.Size = UDim2.fromOffset(336, 92)
+    splash.BackgroundColor3 = THEME.BgMain
+    splash.BackgroundTransparency = 0.08
+    splash.ClipsDescendants = true
+    splash.ZIndex = 95
+    splash.Parent = ScreenGui
+    Session.Track(splash)
+    addCorner(splash, 10)
+    addStroke(splash, THEME.Border, 1.2, 0.2)
+
+    local sStrip = Instance.new("Frame")
+    sStrip.Size = UDim2.new(0, 3, 1, -16)
+    sStrip.Position = UDim2.fromOffset(10, 8)
+    sStrip.BackgroundColor3 = THEME.Accent
+    sStrip.BorderSizePixel = 0
+    sStrip.ZIndex = 96
+    sStrip.Parent = splash
+    addCorner(sStrip, 2)
+
+    local sTitle = Instance.new("TextLabel")
+    sTitle.BackgroundTransparency = 1
+    sTitle.Position = UDim2.fromOffset(22, 12)
+    sTitle.Size = UDim2.new(1, -96, 0, 18)
+    sTitle.Font = Enum.Font.GothamBold
+    sTitle.TextSize = 13
+    sTitle.TextColor3 = THEME.TextPrimary
+    sTitle.TextXAlignment = Enum.TextXAlignment.Left
+    sTitle.Text = "DELTA SUITE · Project Delta"
+    sTitle.ZIndex = 96
+    sTitle.Parent = splash
+
+    local sTimeLbl = Instance.new("TextLabel")
+    sTimeLbl.BackgroundTransparency = 1
+    sTimeLbl.Position = UDim2.new(1, -80, 0, 12)
+    sTimeLbl.Size = UDim2.fromOffset(66, 18)
+    sTimeLbl.Font = Enum.Font.GothamMedium
+    sTimeLbl.TextSize = 11
+    sTimeLbl.TextColor3 = THEME.Accent
+    sTimeLbl.TextXAlignment = Enum.TextXAlignment.Right
+    sTimeLbl.Text = "0%"
+    sTimeLbl.ZIndex = 96
+    sTimeLbl.Parent = splash
+
+    local sStatus = Instance.new("TextLabel")
+    sStatus.BackgroundTransparency = 1
+    sStatus.Position = UDim2.fromOffset(22, 34)
+    sStatus.Size = UDim2.new(1, -36, 0, 16)
+    sStatus.Font = Enum.Font.Gotham
+    sStatus.TextSize = 11
+    sStatus.TextColor3 = THEME.TextSecondary
+    sStatus.TextXAlignment = Enum.TextXAlignment.Left
+    sStatus.Text = "Inicializando módulos..."
+    sStatus.ZIndex = 96
+    sStatus.Parent = splash
+
+    local barTrack = Instance.new("Frame")
+    barTrack.Position = UDim2.fromOffset(22, 60)
+    barTrack.Size = UDim2.new(1, -36, 0, 8)
+    barTrack.BackgroundColor3 = THEME.BgControl
+    barTrack.BorderSizePixel = 0
+    barTrack.ZIndex = 96
+    barTrack.Parent = splash
+    addCorner(barTrack, 4)
+
+    local barFill = Instance.new("Frame")
+    barFill.Size = UDim2.fromScale(0.05, 1)
+    barFill.BackgroundColor3 = THEME.Accent
+    barFill.BorderSizePixel = 0
+    barFill.ZIndex = 97
+    barFill.Parent = barTrack
+    addCorner(barFill, 4)
+
+    local function setProgress(pct: number, msg: string)
+        local p = math.clamp(pct, 0, 1)
+        barFill.Size = UDim2.fromScale(math.max(0.04, p), 1)
+        sTimeLbl.Text = string.format("%d%%", math.floor(p * 100 + 0.5))
+        sStatus.Text = msg
+    end
+
+    -- Phase 1: Wait cleanly for game & UI containers within tight deadline
+    setProgress(0.10, "Esperando estado del juego y PlayerGui...")
+    while Session.IsAlive() do
+        local el = os.clock() - bootT0
+        if (game:IsLoaded() and LocalPlayer and LocalPlayer:FindFirstChild("PlayerGui") and Workspace.CurrentCamera) or el >= 1.8 or el >= MAX_LOAD_SEC then
+            break
+        end
+        setProgress(0.10 + 0.18 * math.clamp(el / 1.8, 0, 1), "Esperando estado del juego y PlayerGui...")
+        task.wait(0.05)
+    end
+    if not Session.IsAlive() then
+        pcall(function() splash:Destroy() end)
+        return
+    end
+
+    -- Phase 2: World / Players / Map / Tags rescan pass 1
+    setProgress(0.32, "Escaneando jugadores, mapa y zonas...")
+    if World._RescanStartup then
+        pcall(World._RescanStartup)
+    end
+
+    local targetFinish = math.min(MAX_LOAD_SEC, math.max(MIN_LOAD_SEC, (os.clock() - bootT0) + 1.2))
+    local profileApplied = false
+    local pass1Refreshed = false
+
+    while Session.IsAlive() do
+        local el = os.clock() - bootT0
+        local frac = math.clamp(el / targetFinish, 0, 1)
+
+        if not profileApplied and frac >= 0.48 then
+            profileApplied = true
+            setProgress(0.55, "Cargando perfil y configuraciones...")
+            pcall(UI.ApplyGlassTheme)
+            pcall(ConfigMgr.TryAutoLoad)
+        elseif not pass1Refreshed and frac >= 0.72 then
+            pass1Refreshed = true
+            setProgress(0.78, "Refrescando opciones de Combat, Visuals y World...")
+            if World._RescanStartup then
+                pcall(World._RescanStartup)
+            end
+            pcall(Combat.ApplyWeaponMods)
+            pcall(World.Step, false)
+            if World._BossHudFrame then
+                (World._BossHudFrame :: GuiObject).Visible = false
+            end
+            pcall(UI.ApplyGlassTheme)
+            pcall(UI.RefreshAll)
+            if type(UI.Preview.Refresh) == "function" then
+                pcall(UI.Preview.Refresh)
+            end
+        elseif profileApplied then
+            setProgress(0.32 + frac * 0.63, pass1Refreshed and "Sincronizando estado final..." or "Aplicando ajustes guardados...")
+        else
+            setProgress(0.32 + frac * 0.63, "Escaneando jugadores, mapa y zonas...")
+        end
+
+        if el >= targetFinish or el >= MAX_LOAD_SEC then
+            break
+        end
+        task.wait(0.05)
+    end
+
+    if not Session.IsAlive() then
+        pcall(function() splash:Destroy() end)
+        return
+    end
+
+    if not profileApplied then
+        pcall(ConfigMgr.TryAutoLoad)
+    end
+
+    -- Phase 3: Final authoritative refresh & UI reveal strictly within <= 5.0s
+    setProgress(1.0, "Opciones listas.")
+    if World._RescanStartup then
+        pcall(World._RescanStartup)
+    end
+    Misc._BootComplete = true
+    pcall(Combat.ApplyWeaponMods)
+    pcall(World.Step, false)
+    pcall(UI.ApplyGlassTheme)
+    pcall(UI.RefreshAll)
+    if Misc.RefreshReportsHud then
+        pcall(Misc.RefreshReportsHud, true)
+    end
+    if World.UpdateMapHud then
+        pcall(World.UpdateMapHud)
+    end
+
+    local hideMenu = Config.Misc.PanicMode and Config.Misc.PanicHideMenu
+    local hideVis = Config.Misc.PanicMode and Config.Misc.PanicHideVisuals
+    MainWindow.Visible = not hideMenu
+    WatermarkFrame.Visible = Config.Settings.Watermark and not hideVis
+    if type(UI.Preview.SyncVisibility) == "function" then
+        pcall(UI.Preview.SyncVisibility)
+    end
+
+    local finalElapsed = os.clock() - bootT0
+    Misc._LastBootSeconds = finalElapsed
+
+    quickTween(splash, { BackgroundTransparency = 1 }, 0.16)
+    quickTween(sStrip, { BackgroundTransparency = 1 }, 0.16)
+    quickTween(barTrack, { BackgroundTransparency = 1 }, 0.16)
+    quickTween(barFill, { BackgroundTransparency = 1 }, 0.16)
+    quickTween(sTitle, { TextTransparency = 1 }, 0.14)
+    quickTween(sTimeLbl, { TextTransparency = 1 }, 0.14)
+    quickTween(sStatus, { TextTransparency = 1 }, 0.14)
+    task.delay(0.18, function()
+        if splash.Parent then
+            pcall(function() splash:Destroy() end)
+        end
+    end)
+
+    UI.Notify("Delta Suite Loaded", string.format("Options refreshed cleanly in %.1fs.", finalElapsed), "success")
+end)()

@@ -393,6 +393,7 @@ local function createDefaultConfig()
             ShowNames = true,
             ShowDistance = false,
             ShowAI = false,
+            ShowBosses = true,
             ShowExits = true,
             ShowCorpses = false,
             FollowMe = false,
@@ -442,6 +443,10 @@ local function createDefaultConfig()
             BossNotify = true,
             BossShowHUD = true,
             BossAlertEvents = true,
+            BossShowGuards = true,
+            BossFilter = "All", -- All | Active
+            BossPosX = -1,
+            BossPosY = -1,
 
             Radar = false,
             RadarSize = 156,
@@ -2947,32 +2952,183 @@ local World: { [string]: any } = {}
         end
     end
 
-    -- Boss & World Event Checker State
-    local KnownBossNames = { "whisper", "dozer", "death", "anton", "boss", "shturman", "scavboss" }
-    local KnownEventNames = { "cargoplane", "mi24", "btr80", "heli", "airdrop", "supplydrop" }
-    local ActiveBossCache: { [Instance]: boolean } = {}
-    local LastBossCheck = 0
-    local LastRenderPlrCheck = 0
-    local LastBossHudText = ""
+    -- Precision Boss & World Event Roster + State Tracker
+    type BossDef = {
+        Id: string,
+        Name: string,
+        Kind: "Boss" | "Event",
+        DefaultZone: string,
+        Color: Color3,
+    }
+    type BossRecord = {
+        Id: string,
+        Name: string,
+        Kind: "Boss" | "Event",
+        State: "ACTIVE" | "DEAD" | "INACTIVE",
+        Zone: string,
+        DefaultZone: string,
+        Color: Color3,
+        HP: number,
+        MaxHP: number,
+        DistMeters: number?,
+        Position: Vector3?,
+        GuardsCount: number,
+        Model: Instance?,
+    }
 
-    local function isBossOrEvent(inst: Instance, checkEvents: boolean): (boolean, string?)
+    local BOSS_DEFS: { BossDef } = {
+        { Id = "Anton", Name = "Anton", Kind = "Boss", DefaultZone = "Sawmill / Lumber", Color = Color3.fromRGB(244, 63, 94) },
+        { Id = "Dozer", Name = "Dozer", Kind = "Boss", DefaultZone = "Factory / Garage", Color = Color3.fromRGB(249, 115, 22) },
+        { Id = "Whisper", Name = "Whisper", Kind = "Boss", DefaultZone = "Crane / Docks / Towers", Color = Color3.fromRGB(168, 85, 247) },
+        { Id = "Death", Name = "Death", Kind = "Boss", DefaultZone = "Swamp Island", Color = Color3.fromRGB(239, 68, 68) },
+        { Id = "ScavKing", Name = "Scav King", Kind = "Boss", DefaultZone = "Outpost / Territories", Color = Color3.fromRGB(234, 179, 8) },
+        { Id = "Mi24", Name = "Mi-24V Gunship", Kind = "Event", DefaultZone = "Airfield / Sky", Color = Color3.fromRGB(56, 189, 248) },
+        { Id = "CargoPlane", Name = "Cargo / Airdrop", Kind = "Event", DefaultZone = "Drop Corridor", Color = Color3.fromRGB(34, 197, 94) },
+        { Id = "BTR80", Name = "BTR-80", Kind = "Event", DefaultZone = "Road / Airfield", Color = Color3.fromRGB(59, 130, 246) },
+    }
+    local TRADER_EXCLUSIONS: { [string]: boolean } = {
+        boss = true,
+        nurse = true,
+        blaze = true,
+        mikhail = true,
+        bunik = true,
+        ivan = true,
+        trader = true,
+        merchant = true,
+        vendor = true,
+        doctor = true,
+    }
+    local CORPSE_FOLDERS: { [string]: boolean } = {
+        Corpses = true,
+        Bodies = true,
+        Ragdolls = true,
+    }
+
+    local LastBossCheck = 0
+    local BossDirty = true
+    local PrevStateById: { [string]: string } = {}
+    local LastNotifyById: { [string]: number } = {}
+    local BoundDeathHums: { [Humanoid]: boolean } = {}
+    local LastRenderPlrCheck = 0
+
+    World._BossRoster = {} :: { BossRecord }
+    World._ActiveBossList = {} :: { BossRecord }
+    World._ActiveBossModels = {} :: { [Instance]: boolean }
+
+    function World._MarkBossDirty()
+        BossDirty = true
+    end
+
+    local function isFriendlyTraderModel(inst: Instance, ln: string): boolean
+        if TRADER_EXCLUSIONS[ln] or ln:find("trader") or ln:find("shop") or ln:find("vendor") then
+            return true
+        end
+        if inst:GetAttribute("IsTrader") == true or inst:GetAttribute("Trader") == true then
+            return true
+        end
+        return false
+    end
+
+    local function classifyBossEntity(inst: Instance, inEventContainer: boolean): (string?, "Boss" | "Event" | "Guard", string?)
         local ln = inst.Name:lower()
-        for _, b in ipairs(KnownBossNames) do
-            if ln:find(b) then
-                return true, inst.Name
+        if ln == "" or isFriendlyTraderModel(inst, ln) then
+            return nil, "Boss", nil
+        end
+        if ln:find("deathbox") or ln:find("deathscreen") or ln:find("deatheffect") or ln:find("deathmarker") then
+            return nil, "Boss", nil
+        end
+        -- Anton vs Anton Guards (separate count so surviving guards don't keep Anton falsely ACTIVE!)
+        if ln:find("anton") then
+            if ln:find("guard") then
+                return "Anton", "Guard", "Anton Guard"
+            end
+            return "Anton", "Boss", "Anton"
+        end
+        if ln:find("dozer") or ln:find("bulldozer") then
+            return "Dozer", "Boss", "Dozer"
+        end
+        if ln:find("whisper") then
+            return "Whisper", "Boss", "Whisper"
+        end
+        if ln:find("scavking") or ln:find("scav_king") or ln:find("scav king") or ln:find("scavboss") then
+            return "ScavKing", "Boss", "Scav King"
+        end
+
+        local hasBossAttr = (inst:GetAttribute("IsBoss") == true) or (inst:GetAttribute("Boss") == true)
+        if ln == "death" or ln:find("^death[%s_%-]") or ln:find("[%s_%-]death$") or (ln:find("death") and hasBossAttr) then
+            if inst:FindFirstChildOfClass("Humanoid") or hasBossAttr then
+                return "Death", "Boss", "Death"
             end
         end
-        if inst:GetAttribute("IsBoss") == true or inst:GetAttribute("Boss") == true then
-            return true, inst.Name
+
+        -- World Events (Helicopter, Cargo Plane / Airdrop, BTR)
+        if ln:find("mi24") or ln:find("mi%-24") or ln:find("hind") or ln:find("gunship") or ln:find("chopper") or ln:find("helicopter") then
+            return "Mi24", "Event", "Mi-24V Gunship"
         end
-        if checkEvents then
-            for _, ev in ipairs(KnownEventNames) do
-                if ln:find(ev) then
-                    return true, inst.Name
-                end
+        if ln:find("cargoplane") or ln:find("cargo") or ln:find("airdrop") or ln:find("supplydrop") or ln:find("c130") then
+            return "CargoPlane", "Event", "Cargo / Airdrop"
+        end
+        if ln:find("btr80") or ln:find("btr%-80") or ln == "btr" or ln:find("^btr[%s_%-]") or ln:find("[%s_%-]btr$") then
+            return "BTR80", "Event", "BTR-80"
+        end
+
+        -- Dynamic unknown boss detection via Attributes or high MaxHealth hostile humanoid
+        local hum = inst:FindFirstChildOfClass("Humanoid")
+        if hasBossAttr then
+            return "Dyn_" .. inst.Name, inEventContainer and "Event" or "Boss", inst.Name
+        end
+        if hum and hum.MaxHealth >= 250 then
+            return "Dyn_" .. inst.Name, "Boss", inst.Name
+        end
+        if inEventContainer then
+            return "Dyn_" .. inst.Name, "Event", inst.Name
+        end
+        return nil, "Boss", nil
+    end
+
+    function World._IsBossModel(model: Instance): boolean
+        local id, kind = classifyBossEntity(model, false)
+        return id ~= nil and kind ~= "Guard"
+    end
+
+    local function readEntityWorldPos(inst: Instance): Vector3?
+        if inst:IsA("Model") then
+            local hrp = inst:FindFirstChild("HumanoidRootPart")
+            if hrp and hrp:IsA("BasePart") then
+                return hrp.Position
             end
+            local pp = inst.PrimaryPart
+            if pp then
+                return pp.Position
+            end
+            local head = inst:FindFirstChild("Head")
+            if head and head:IsA("BasePart") then
+                return head.Position
+            end
+            local ok, cf = pcall(function()
+                return inst:GetPivot()
+            end)
+            if ok and typeof(cf) == "CFrame" then
+                return cf.Position
+            end
+        elseif inst:IsA("BasePart") then
+            return inst.Position
         end
-        return false, nil
+        return nil
+    end
+
+    local function resolveZoneName(inst: Instance, defaultZone: string): string
+        local p = inst.Parent
+        if not p then
+            return defaultZone
+        end
+        if p.Name == "Workspace" or p.Name == "WorldEvents" or CORPSE_FOLDERS[p.Name] then
+            if p.Parent and p.Parent.Name == "AiZones" then
+                return p.Name
+            end
+            return defaultZone
+        end
+        return p.Name
     end
 
     function World.Step(suspend: boolean?)
@@ -3318,71 +3474,243 @@ local World: { [string]: any } = {}
             end
         end
 
-        -- 14. Boss Checker (throttled ~1.5s)
+        -- 14. Precision Boss & World Event Tracker (event-driven + 0.55s throttled multi-source rescan)
         local hudFrame = World._BossHudFrame :: Frame?
-        local hudLabel = World._BossHudText :: TextLabel?
-        if paused or not w.BossChecker then
-            if hudFrame then hudFrame.Visible = false end
-        elseif (now - LastBossCheck) >= 1.5 then
-            LastBossCheck = now
-            local foundList: { string } = {}
-            local seenNames: { [string]: boolean } = {}
-            for model, entry in pairs(Actors) do
-                if entry.IsAI and model.Parent then
-                    local hum = model:FindFirstChildOfClass("Humanoid")
-                    if hum and hum.Health > 0 then
-                        local hit, bName = isBossOrEvent(model, w.BossAlertEvents)
-                        if hit and bName then
-                            local zoneName = model.Parent and model.Parent.Name or "AiZones"
-                            local disp = string.format("%s (%s)", bName, zoneName)
-                            if not seenNames[disp] then
-                                seenNames[disp] = true
-                                table.insert(foundList, disp)
+        local trackMapBosses = Config.Map and Config.Map.Enabled and (Config.Map.ShowBosses ~= false)
+        if paused or (not w.BossChecker and not trackMapBosses) then
+            if hudFrame then
+                hudFrame.Visible = false
+            end
+        else
+            local scanInterval = BossDirty and 0.05 or ((w.BossChecker and w.BossShowHUD) and 0.55 or 1.2)
+            if (now - LastBossCheck) >= scanInterval then
+                LastBossCheck = now
+                BossDirty = false
+
+                local lpChar = LocalPlayer and LocalPlayer.Character
+                local lpRoot = lpChar and (lpChar:FindFirstChild("HumanoidRootPart") :: BasePart? or lpChar.PrimaryPart)
+                local lpPos = lpRoot and lpRoot.Position
+
+                local byId: { [string]: BossRecord } = {}
+                local ordered: { BossRecord } = {}
+                for _, def in ipairs(BOSS_DEFS) do
+                    local rec: BossRecord = {
+                        Id = def.Id,
+                        Name = def.Name,
+                        Kind = def.Kind,
+                        State = "INACTIVE",
+                        Zone = def.DefaultZone,
+                        DefaultZone = def.DefaultZone,
+                        Color = def.Color,
+                        HP = 0,
+                        MaxHP = 0,
+                        DistMeters = nil,
+                        Position = nil,
+                        GuardsCount = 0,
+                        Model = nil,
+                    }
+                    byId[def.Id] = rec
+                    table.insert(ordered, rec)
+                end
+
+                local visited: { [Instance]: boolean } = {}
+                local activeModels: { [Instance]: boolean } = {}
+
+                local function inspectCandidate(inst: Instance, inEventFolder: boolean, inCorpseContext: boolean)
+                    if not inst or not inst.Parent or visited[inst] then
+                        return
+                    end
+                    visited[inst] = true
+
+                    local id, kind, dispName = classifyBossEntity(inst, inEventFolder)
+                    if not id then
+                        return
+                    end
+
+                    -- Guards (e.g. AntonGuard) only count toward the parent boss if alive, never keep dead boss ACTIVE
+                    local hum = inst:FindFirstChildOfClass("Humanoid")
+                    if kind == "Guard" then
+                        if not inCorpseContext and hum and hum.Health > 0 then
+                            local parentRec = byId[id]
+                            if parentRec then
+                                parentRec.GuardsCount += 1
                             end
-                            if w.BossNotify and not ActiveBossCache[model] then
-                                ActiveBossCache[model] = true
-                                if World._Notify then
-                                    World._Notify("Boss Detected", disp .. " is active!", "warn")
-                                end
+                        end
+                        return
+                    end
+
+                    if kind == "Event" and not w.BossAlertEvents and not trackMapBosses then
+                        return
+                    end
+
+                    local rec = byId[id]
+                    if not rec then
+                        rec = {
+                            Id = id,
+                            Name = dispName or inst.Name,
+                            Kind = kind,
+                            State = "INACTIVE",
+                            Zone = resolveZoneName(inst, inEventFolder and "World Event" or "Estonian Border"),
+                            DefaultZone = inEventFolder and "World Event" or "AiZones",
+                            Color = (kind == "Event") and Color3.fromRGB(56, 189, 248) or Color3.fromRGB(244, 63, 94),
+                            HP = 0,
+                            MaxHP = 0,
+                            DistMeters = nil,
+                            Position = nil,
+                            GuardsCount = 0,
+                            Model = nil,
+                        }
+                        byId[id] = rec
+                        table.insert(ordered, rec)
+                    end
+
+                    local pos = readEntityWorldPos(inst)
+                    local distM: number? = nil
+                    if pos and lpPos then
+                        distM = math.floor((pos - lpPos).Magnitude / 3.5 + 0.5)
+                    end
+
+                    local isAlive = false
+                    if not inCorpseContext then
+                        if hum then
+                            isAlive = hum.Health > 0
+                        else
+                            isAlive = (kind == "Event") or (inEventFolder == true)
+                        end
+                    end
+
+                    if isAlive then
+                        if hum and not BoundDeathHums[hum] then
+                            BoundDeathHums[hum] = true
+                            Session.Bind(hum.Died, function()
+                                BossDirty = true
+                            end)
+                        end
+                        rec.State = "ACTIVE"
+                        rec.Zone = resolveZoneName(inst, rec.DefaultZone)
+                        rec.HP = hum and math.floor(hum.Health + 0.5) or 0
+                        rec.MaxHP = hum and math.floor(hum.MaxHealth + 0.5) or 0
+                        rec.Position = pos
+                        rec.DistMeters = distM
+                        rec.Model = inst
+                        activeModels[inst] = true
+                    elseif rec.State ~= "ACTIVE" then
+                        rec.State = "DEAD"
+                        rec.Zone = resolveZoneName(inst, rec.DefaultZone)
+                        rec.HP = 0
+                        rec.Position = pos or rec.Position
+                        rec.DistMeters = distM or rec.DistMeters
+                        rec.Model = inst
+                    end
+                end
+
+                -- 1. Registered AI Actors
+                for model, entry in pairs(Actors) do
+                    if entry.IsAI and model.Parent then
+                        inspectCandidate(model, false, false)
+                    end
+                end
+
+                -- 2. Direct AiZones & fallback Workspace AI containers
+                local aiZones = Workspace:FindFirstChild("AiZones")
+                if aiZones then
+                    for _, zone in ipairs(aiZones:GetChildren()) do
+                        for _, npc in ipairs(zone:GetChildren()) do
+                            if npc:IsA("Model") then
+                                inspectCandidate(npc, false, false)
                             end
                         end
                     end
                 end
-            end
-            if w.BossAlertEvents then
-                local we = Workspace:FindFirstChild("WorldEvents")
-                if we then
-                    for _, ev in ipairs(we:GetChildren()) do
-                        local hit, eName = isBossOrEvent(ev, true)
-                        if hit and eName then
-                            if not seenNames[eName] then
-                                seenNames[eName] = true
-                                table.insert(foundList, eName)
-                            end
-                            if w.BossNotify and not ActiveBossCache[ev] then
-                                ActiveBossCache[ev] = true
-                                if World._Notify then
-                                    World._Notify("World Event", eName .. " active on map!", "info")
-                                end
+                for _, fName in ipairs({ "Bots", "AI", "NPCs", "Bosses", "Enemies" }) do
+                    local f = Workspace:FindFirstChild(fName)
+                    if f then
+                        for _, npc in ipairs(f:GetChildren()) do
+                            if npc:IsA("Model") then
+                                inspectCandidate(npc, false, false)
                             end
                         end
                     end
                 end
-            end
-            for inst in pairs(ActiveBossCache) do
-                if not inst.Parent then ActiveBossCache[inst] = nil end
-            end
-            if hudFrame and hudLabel then
-                hudFrame.Visible = w.BossShowHUD == true
-                local txt = (#foundList > 0) and ("BOSS: " .. table.concat(foundList, " • ")) or "BOSS CHECKER: None active"
-                if txt ~= LastBossHudText then
-                    LastBossHudText = txt
-                    hudLabel.Text = txt
-                    hudLabel.TextColor3 = (#foundList > 0) and Color3.fromRGB(251, 191, 36) or Color3.fromRGB(148, 163, 184)
+
+                -- 3. World Events folder + top-level Workspace vehicles/planes
+                local weFolder = Workspace:FindFirstChild("WorldEvents")
+                if weFolder then
+                    for _, ev in ipairs(weFolder:GetChildren()) do
+                        inspectCandidate(ev, true, false)
+                    end
                 end
+                for _, wsChild in ipairs(Workspace:GetChildren()) do
+                    if wsChild:IsA("Model") then
+                        local ln = wsChild.Name:lower()
+                        if ln:find("cargo") or ln:find("mi24") or ln:find("mi%-24") or ln:find("airdrop") or ln:find("btr") then
+                            inspectCandidate(wsChild, true, false)
+                        end
+                    end
+                end
+
+                -- 4. Corpse containers (`WorldTags` Corpses + Workspace Corpse folders) for DEAD state
+                for inst, tag in pairs(WorldTags) do
+                    if tag.Category == "Corpse" and inst.Parent then
+                        inspectCandidate(inst, false, true)
+                    end
+                end
+                for cFolderName in pairs(CORPSE_FOLDERS) do
+                    local cf = Workspace:FindFirstChild(cFolderName)
+                    if cf then
+                        for _, ch in ipairs(cf:GetChildren()) do
+                            inspectCandidate(ch, false, true)
+                        end
+                    end
+                end
+
+                -- Cleanup old humanoid death connections from cache
+                for hum in pairs(BoundDeathHums) do
+                    if not hum.Parent then
+                        BoundDeathHums[hum] = nil
+                    end
+                end
+
+                local activeList: { BossRecord } = {}
+                for _, rec in ipairs(ordered) do
+                    local prev = PrevStateById[rec.Id]
+                    PrevStateById[rec.Id] = rec.State
+
+                    if rec.State == "ACTIVE" then
+                        table.insert(activeList, rec)
+                        if w.BossChecker and w.BossNotify and prev ~= "ACTIVE" then
+                            local lastAt = LastNotifyById[rec.Id] or 0
+                            if (now - lastAt) >= 8 then
+                                LastNotifyById[rec.Id] = now
+                                if World._Notify then
+                                    local distStr = rec.DistMeters and string.format(" (%dm)", rec.DistMeters) or ""
+                                    local title = (rec.Kind == "Event") and "World Event Active" or "Boss Spawned"
+                                    local kindStr = (rec.Kind == "Event") and "info" or "warn"
+                                    World._Notify(title, string.format("%s active @ %s%s", rec.Name, rec.Zone, distStr), kindStr)
+                                end
+                            end
+                        end
+                    elseif rec.State == "DEAD" and prev == "ACTIVE" and w.BossChecker and w.BossNotify then
+                        local lastDead = LastNotifyById[rec.Id .. "_D"] or 0
+                        if (now - lastDead) >= 6 then
+                            LastNotifyById[rec.Id .. "_D"] = now
+                            if World._Notify then
+                                World._Notify("Boss Defeated", string.format("%s eliminated @ %s", rec.Name, rec.Zone), "success")
+                            end
+                        end
+                    end
+                end
+
+                World._BossRoster = ordered
+                World._ActiveBossList = activeList
+                World._ActiveBossModels = activeModels
+
+                if World.RefreshBossHud then
+                    World.RefreshBossHud(false)
+                end
+            elseif World.RefreshBossHud then
+                World.RefreshBossHud(false)
             end
-        elseif hudFrame then
-            hudFrame.Visible = w.BossShowHUD == true
         end
     end
 
@@ -4153,8 +4481,7 @@ local function renderActorESP(entry: ActorEntry, cam: Camera, vp: Vector2)
     local isDowned = (not isAI and entry.Player ~= nil) and Delta.IsPlayerDowned(entry.Player :: Player, model) or false
     local primaryColor: Color3
     if isAI then
-        local ln = model.Name:lower()
-        local isBoss = ln:find("boss") or ln:find("whisper") or ln:find("dozer") or ln:find("death")
+        local isBoss = World._IsBossModel and World._IsBossModel(model) or false
         primaryColor = isBoss and Config.AIESP.BossColor or Config.AIESP.Color
     elseif isTeam then
         primaryColor = Config.PlayerESP.SquadColor
@@ -4613,8 +4940,7 @@ Combat._SilentFOV = newDraw("Circle", { Thickness = 1.4, NumSides = 72, Filled =
                 if hum and root and hum.Health > 0 then
                     if entry.IsAI then
                         if Config.World.RadarNPC then
-                            local ln = model.Name:lower()
-                            local isBoss = ln:find("whisper") or ln:find("dozer") or ln:find("death") or ln:find("boss") or ln:find("anton")
+                            local isBoss = World._IsBossModel and World._IsBossModel(model) or false
                             pushBlip(root.Position, isBoss and Config.AIESP.BossColor or Config.AIESP.Color, isBoss and 4.0 or 2.8, isBoss and model.Name or nil)
                         end
                     elseif Config.World.RadarPlayers then
@@ -4676,22 +5002,37 @@ Session.Bind(Players.PlayerRemoving, function(p)
     end
 end)
 
+local BoundFolders: { [Instance]: boolean } = {}
+
 local function bindAiZone(zone: Instance)
+    if BoundFolders[zone] then
+        return
+    end
+    BoundFolders[zone] = true
     for _, npc in ipairs(zone:GetChildren()) do
         if npc:IsA("Model") then
             registerActor(npc, nil, true)
         end
     end
     Session.Bind(zone.ChildAdded, function(npc)
+        if World._MarkBossDirty then
+            World._MarkBossDirty()
+        end
         task.wait(0.1)
         if npc:IsA("Model") and npc.Parent then
             registerActor(npc, nil, true)
+            if World._MarkBossDirty then
+                World._MarkBossDirty()
+            end
         end
     end)
-    Session.Bind(zone.ChildRemoved, unregisterActor)
+    Session.Bind(zone.ChildRemoved, function(npc)
+        unregisterActor(npc)
+        if World._MarkBossDirty then
+            World._MarkBossDirty()
+        end
+    end)
 end
-
-local BoundFolders: { [Instance]: boolean } = {}
 
 local function attachAiZonesFolder(folder: Instance)
     if BoundFolders[folder] then
@@ -4701,7 +5042,32 @@ local function attachAiZonesFolder(folder: Instance)
     for _, zone in ipairs(folder:GetChildren()) do
         bindAiZone(zone)
     end
-    Session.Bind(folder.ChildAdded, bindAiZone)
+    Session.Bind(folder.ChildAdded, function(zone)
+        bindAiZone(zone)
+        if World._MarkBossDirty then
+            World._MarkBossDirty()
+        end
+    end)
+end
+
+local function bindWorldEventsFolder(folder: Instance)
+    if BoundFolders[folder] then
+        return
+    end
+    BoundFolders[folder] = true
+    if World._MarkBossDirty then
+        World._MarkBossDirty()
+    end
+    Session.Bind(folder.ChildAdded, function()
+        if World._MarkBossDirty then
+            World._MarkBossDirty()
+        end
+    end)
+    Session.Bind(folder.ChildRemoved, function()
+        if World._MarkBossDirty then
+            World._MarkBossDirty()
+        end
+    end)
 end
 
 local function bindFolderTags(folder: Instance?, cat: "Container" | "Corpse" | "Dropped" | "Quest" | "Exit")
@@ -4713,17 +5079,29 @@ local function bindFolderTags(folder: Instance?, cat: "Container" | "Corpse" | "
         registerWorldTag(ch, cat)
     end
     Session.Bind(folder.ChildAdded, function(ch)
+        if cat == "Corpse" and World._MarkBossDirty then
+            World._MarkBossDirty()
+        end
         task.wait(0.1)
         if ch.Parent then
             registerWorldTag(ch, cat)
         end
     end)
-    Session.Bind(folder.ChildRemoved, unregisterWorldTag)
+    Session.Bind(folder.ChildRemoved, function(ch)
+        unregisterWorldTag(ch)
+        if cat == "Corpse" and World._MarkBossDirty then
+            World._MarkBossDirty()
+        end
+    end)
 end
 
 local function hookWorkspaceFolder(child: Instance)
     if child.Name == "AiZones" then
         attachAiZonesFolder(child)
+    elseif child.Name == "WorldEvents" then
+        bindWorldEventsFolder(child)
+    elseif child.Name == "Bots" or child.Name == "AI" or child.Name == "Bosses" then
+        bindWorldEventsFolder(child)
     elseif child.Name == "Containers" then
         bindFolderTags(child, "Container")
     elseif child.Name == "Corpses" or child.Name == "Bodies" or child.Name == "Ragdolls" then
@@ -6213,41 +6591,472 @@ Misc._Notify = UI.Notify
 Misc._Watermark = WatermarkFrame
 World._Notify = UI.Notify
 
+-- Professional Live Boss & World Event Tracker HUD (lists all bosses with ACTIVE/DEAD/INACTIVE status, zone, HP, dist & Map focus)
 ;(function()
     local bossHud = Instance.new("Frame")
     bossHud.Name = "BossCheckerHUD"
     bossHud.AnchorPoint = Vector2.new(1, 0)
     bossHud.Position = UDim2.new(1, -16, 0, 82)
-    bossHud.Size = UDim2.fromOffset(310, 26)
+    bossHud.Size = UDim2.fromOffset(334, 240)
     bossHud.BackgroundColor3 = THEME.BgMain
-    bossHud.BackgroundTransparency = 0.28
+    bossHud.BackgroundTransparency = 0.22
+    bossHud.ClipsDescendants = true
     bossHud.Visible = false
     bossHud.Parent = ScreenGui
-    addCorner(bossHud, 6)
-    addStroke(bossHud, Color3.fromRGB(245, 158, 11), 1, 0.35)
+    addCorner(bossHud, 8)
+    local hudStroke = addStroke(bossHud, THEME.Border, 1.1, 0.25)
 
-    local bhBar = Instance.new("Frame")
-    bhBar.Size = UDim2.new(0, 3, 1, -8)
-    bhBar.Position = UDim2.fromOffset(6, 4)
-    bhBar.BackgroundColor3 = Color3.fromRGB(245, 158, 11)
-    bhBar.BorderSizePixel = 0
-    bhBar.Parent = bossHud
-    addCorner(bhBar, 2)
+    local bhHeader = Instance.new("Frame")
+    bhHeader.Size = UDim2.new(1, 0, 0, 28)
+    bhHeader.BackgroundColor3 = THEME.BgSidebar
+    bhHeader.BackgroundTransparency = 0.24
+    bhHeader.BorderSizePixel = 0
+    bhHeader.Parent = bossHud
 
-    local bhLbl = Instance.new("TextLabel")
-    bhLbl.BackgroundTransparency = 1
-    bhLbl.Position = UDim2.fromOffset(15, 0)
-    bhLbl.Size = UDim2.new(1, -22, 1, 0)
-    bhLbl.Font = Enum.Font.GothamBold
-    bhLbl.TextSize = 11
-    bhLbl.TextColor3 = Color3.fromRGB(251, 191, 36)
-    bhLbl.TextXAlignment = Enum.TextXAlignment.Left
-    bhLbl.TextTruncate = Enum.TextTruncate.AtEnd
-    bhLbl.Text = "BOSS CHECKER: Scanning..."
-    bhLbl.Parent = bossHud
+    local bhDot = Instance.new("Frame")
+    bhDot.Size = UDim2.fromOffset(7, 7)
+    bhDot.Position = UDim2.fromOffset(10, 11)
+    bhDot.BackgroundColor3 = THEME.TextMuted
+    bhDot.BorderSizePixel = 0
+    bhDot.Parent = bhHeader
+    addCorner(bhDot, 9)
+
+    local bhTitle = Instance.new("TextLabel")
+    bhTitle.BackgroundTransparency = 1
+    bhTitle.Position = UDim2.fromOffset(22, 0)
+    bhTitle.Size = UDim2.new(1, -118, 1, 0)
+    bhTitle.Font = Enum.Font.GothamBold
+    bhTitle.TextSize = 11
+    bhTitle.TextColor3 = THEME.TextPrimary
+    bhTitle.TextXAlignment = Enum.TextXAlignment.Left
+    bhTitle.TextTruncate = Enum.TextTruncate.AtEnd
+    bhTitle.Text = "BOSS TRACKER · 0 Active"
+    bhTitle.Parent = bhHeader
+
+    local bhFilterBtn = Instance.new("TextButton")
+    bhFilterBtn.Size = UDim2.fromOffset(56, 18)
+    bhFilterBtn.Position = UDim2.new(1, -84, 0.5, -9)
+    bhFilterBtn.BackgroundColor3 = THEME.BgControl
+    bhFilterBtn.Font = Enum.Font.GothamSemibold
+    bhFilterBtn.TextSize = 10
+    bhFilterBtn.TextColor3 = THEME.Accent
+    bhFilterBtn.Text = "All"
+    bhFilterBtn.AutoButtonColor = false
+    bhFilterBtn.Parent = bhHeader
+    addCorner(bhFilterBtn, 4)
+    addStroke(bhFilterBtn, THEME.Border, 1, 0.35)
+
+    local bhCloseBtn = Instance.new("TextButton")
+    bhCloseBtn.Size = UDim2.fromOffset(20, 18)
+    bhCloseBtn.Position = UDim2.new(1, -24, 0.5, -9)
+    bhCloseBtn.BackgroundColor3 = THEME.BgControl
+    bhCloseBtn.Font = Enum.Font.GothamBold
+    bhCloseBtn.TextSize = 10
+    bhCloseBtn.TextColor3 = THEME.TextSecondary
+    bhCloseBtn.Text = "X"
+    bhCloseBtn.AutoButtonColor = false
+    bhCloseBtn.Parent = bhHeader
+    addCorner(bhCloseBtn, 4)
+
+    -- Column header strip
+    local bhCols = Instance.new("Frame")
+    bhCols.Position = UDim2.fromOffset(6, 30)
+    bhCols.Size = UDim2.new(1, -12, 0, 15)
+    bhCols.BackgroundTransparency = 1
+    bhCols.Parent = bossHud
+
+    local function makeColHdr(txt: string, xPos: UDim2, w: number, align: Enum.TextXAlignment)
+        local l = Instance.new("TextLabel")
+        l.BackgroundTransparency = 1
+        l.Position = xPos
+        l.Size = UDim2.fromOffset(w, 15)
+        l.Font = Enum.Font.GothamBold
+        l.TextSize = 9
+        l.TextColor3 = THEME.TextMuted
+        l.TextXAlignment = align
+        l.Text = txt
+        l.Parent = bhCols
+    end
+    makeColHdr("STATUS", UDim2.fromOffset(6, 0), 58, Enum.TextXAlignment.Left)
+    makeColHdr("BOSS / ZONE", UDim2.fromOffset(70, 0), 140, Enum.TextXAlignment.Left)
+    makeColHdr("HP / DIST", UDim2.new(1, -104, 0, 0), 98, Enum.TextXAlignment.Right)
+
+    local bhScroll = Instance.new("ScrollingFrame")
+    bhScroll.Position = UDim2.fromOffset(6, 47)
+    bhScroll.Size = UDim2.new(1, -12, 1, -53)
+    bhScroll.BackgroundTransparency = 1
+    bhScroll.BorderSizePixel = 0
+    bhScroll.ScrollBarThickness = 3
+    bhScroll.ScrollBarImageColor3 = THEME.Border
+    bhScroll.AutomaticCanvasSize = Enum.AutomaticSize.None
+    bhScroll.CanvasSize = UDim2.fromOffset(0, 0)
+    bhScroll.Parent = bossHud
+
+    local bhList = Instance.new("UIListLayout")
+    bhList.Padding = UDim.new(0, 4)
+    bhList.SortOrder = Enum.SortOrder.LayoutOrder
+    bhList.Parent = bhScroll
+
+    local emptyLbl = Instance.new("TextLabel")
+    emptyLbl.Size = UDim2.new(1, 0, 0, 32)
+    emptyLbl.BackgroundTransparency = 1
+    emptyLbl.Font = Enum.Font.GothamMedium
+    emptyLbl.TextSize = 11
+    emptyLbl.TextColor3 = THEME.TextSecondary
+    emptyLbl.Text = "No active bosses detected right now."
+    emptyLbl.Visible = false
+    emptyLbl.Parent = bhScroll
+
+    -- Header drag for Boss Tracker HUD (saved in Config.World.BossPosX/Y)
+    local draggingBossHud = false
+    local dragStartPos: Vector2? = nil
+    local hudStartPos: UDim2? = nil
+    Session.Bind(bhHeader.InputBegan, function(inp: InputObject)
+        if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            draggingBossHud = true
+            dragStartPos = Vector2.new(inp.Position.X, inp.Position.Y)
+            if bossHud.AnchorPoint.X ~= 0 then
+                local absPos = bossHud.AbsolutePosition
+                local rootPos = ScreenGui.AbsolutePosition
+                bossHud.AnchorPoint = Vector2.new(0, 0)
+                bossHud.Position = UDim2.fromOffset(absPos.X - rootPos.X, absPos.Y - rootPos.Y)
+            end
+            hudStartPos = bossHud.Position
+        end
+    end)
+    Session.Bind(UserInputService.InputChanged, function(inp: InputObject)
+        if draggingBossHud and dragStartPos and hudStartPos and inp.UserInputType == Enum.UserInputType.MouseMovement then
+            local delta = Vector2.new(inp.Position.X, inp.Position.Y) - dragStartPos
+            local vp = Workspace.CurrentCamera and Workspace.CurrentCamera.ViewportSize or Vector2.new(1920, 1080)
+            local nx = math.clamp(hudStartPos.X.Offset + delta.X, 4, math.max(4, vp.X - bossHud.AbsoluteSize.X - 4))
+            local ny = math.clamp(hudStartPos.Y.Offset + delta.Y, 4, math.max(4, vp.Y - bossHud.AbsoluteSize.Y - 4))
+            Config.World.BossPosX = nx
+            Config.World.BossPosY = ny
+            bossHud.Position = UDim2.fromOffset(nx, ny)
+        end
+    end)
+    Session.Bind(UserInputService.InputEnded, function(inp: InputObject)
+        if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            draggingBossHud = false
+        end
+    end)
+
+    type BossRowSlot = {
+        Row: TextButton,
+        Strip: Frame,
+        Badge: TextLabel,
+        NameLbl: TextLabel,
+        ZoneLbl: TextLabel,
+        InfoLbl: TextLabel,
+        RowStroke: UIStroke,
+        LastOrder: number,
+        LastBadgeText: string,
+        LastName: string,
+        LastZone: string,
+        LastInfo: string,
+        CurrentPos: Vector3?,
+        CurrentTitle: string,
+        CurrentActive: boolean,
+    }
+    local rowPool: { [string]: BossRowSlot } = {}
+    local lastHudSig = ""
+    local lastRowCount = -1
+
+    local function createBossRowSlot(id: string): BossRowSlot
+        local row = Instance.new("TextButton")
+        row.Name = "BossRow_" .. id
+        row.Size = UDim2.new(1, -2, 0, 34)
+        row.BackgroundColor3 = THEME.BgControl
+        row.BackgroundTransparency = 0.22
+        row.Text = ""
+        row.AutoButtonColor = false
+        row.Visible = false
+        row.Parent = bhScroll
+        addCorner(row, 5)
+        local rowStroke = addStroke(row, THEME.Border, 1, 0.55)
+
+        local strip = Instance.new("Frame")
+        strip.Size = UDim2.new(0, 3, 1, -8)
+        strip.Position = UDim2.fromOffset(3, 4)
+        strip.BackgroundColor3 = THEME.TextMuted
+        strip.BorderSizePixel = 0
+        strip.Parent = row
+        addCorner(strip, 2)
+
+        local badge = Instance.new("TextLabel")
+        badge.Size = UDim2.fromOffset(56, 18)
+        badge.Position = UDim2.fromOffset(10, 8)
+        badge.BackgroundColor3 = Color3.fromRGB(51, 65, 85)
+        badge.BackgroundTransparency = 0.1
+        badge.Font = Enum.Font.GothamBold
+        badge.TextSize = 9
+        badge.TextColor3 = THEME.TextPrimary
+        badge.Text = "INACTIVE"
+        badge.Parent = row
+        addCorner(badge, 4)
+
+        local nameLbl = Instance.new("TextLabel")
+        nameLbl.BackgroundTransparency = 1
+        nameLbl.Position = UDim2.fromOffset(72, 3)
+        nameLbl.Size = UDim2.new(1, -172, 0, 15)
+        nameLbl.Font = Enum.Font.GothamBold
+        nameLbl.TextSize = 11
+        nameLbl.TextColor3 = THEME.TextPrimary
+        nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+        nameLbl.TextTruncate = Enum.TextTruncate.AtEnd
+        nameLbl.Parent = row
+
+        local zoneLbl = Instance.new("TextLabel")
+        zoneLbl.BackgroundTransparency = 1
+        zoneLbl.Position = UDim2.fromOffset(72, 17)
+        zoneLbl.Size = UDim2.new(1, -172, 0, 14)
+        zoneLbl.Font = Enum.Font.Gotham
+        zoneLbl.TextSize = 10
+        zoneLbl.TextColor3 = THEME.TextSecondary
+        zoneLbl.TextXAlignment = Enum.TextXAlignment.Left
+        zoneLbl.TextTruncate = Enum.TextTruncate.AtEnd
+        zoneLbl.Parent = row
+
+        local infoLbl = Instance.new("TextLabel")
+        infoLbl.BackgroundTransparency = 1
+        infoLbl.Position = UDim2.new(1, -100, 0, 0)
+        infoLbl.Size = UDim2.fromOffset(94, 34)
+        infoLbl.Font = Enum.Font.GothamSemibold
+        infoLbl.TextSize = 10
+        infoLbl.TextColor3 = THEME.TextSecondary
+        infoLbl.TextXAlignment = Enum.TextXAlignment.Right
+        infoLbl.TextTruncate = Enum.TextTruncate.AtEnd
+        infoLbl.Parent = row
+
+        local slot: BossRowSlot = {
+            Row = row,
+            Strip = strip,
+            Badge = badge,
+            NameLbl = nameLbl,
+            ZoneLbl = zoneLbl,
+            InfoLbl = infoLbl,
+            RowStroke = rowStroke,
+            LastOrder = -1,
+            LastBadgeText = "",
+            LastName = "",
+            LastZone = "",
+            LastInfo = "",
+            CurrentPos = nil,
+            CurrentTitle = "",
+            CurrentActive = false,
+        }
+        Session.Bind(row.MouseButton1Click, function()
+            if slot.CurrentActive and slot.CurrentPos and World._FocusMapOnPos then
+                World._FocusMapOnPos(slot.CurrentPos, slot.CurrentTitle)
+            end
+        end)
+        rowPool[id] = slot
+        return slot
+    end
+
+    local function stateOrderWeight(st: string): number
+        if st == "ACTIVE" then return 1
+        elseif st == "DEAD" then return 2
+        else return 3 end
+    end
+
+    local function refreshBossHud(force: boolean?)
+        if not Misc._BootComplete or not Config.World.BossChecker or not Config.World.BossShowHUD
+            or (Config.Misc.PanicMode and Config.Misc.PanicHideVisuals) then
+            bossHud.Visible = false
+            return
+        end
+
+        if (Config.World.BossPosX or -1) >= 0 and (Config.World.BossPosY or -1) >= 0 then
+            if not draggingBossHud then
+                local vp = Workspace.CurrentCamera and Workspace.CurrentCamera.ViewportSize or Vector2.new(1920, 1080)
+                bossHud.AnchorPoint = Vector2.new(0, 0)
+                bossHud.Position = UDim2.fromOffset(
+                    math.clamp(Config.World.BossPosX, 4, math.max(4, vp.X - bossHud.AbsoluteSize.X - 4)),
+                    math.clamp(Config.World.BossPosY, 4, math.max(4, vp.Y - bossHud.AbsoluteSize.Y - 4))
+                )
+            end
+        elseif bossHud.AnchorPoint.X ~= 1 then
+            bossHud.AnchorPoint = Vector2.new(1, 0)
+            bossHud.Position = UDim2.new(1, -16, 0, 82)
+        end
+
+        if not bossHud.Visible then
+            bossHud.Visible = true
+        end
+
+        local filterMode = (Config.World.BossFilter == "Active") and "Active" or "All"
+        local roster = World._BossRoster or {}
+        local visibleRows = {}
+        local activeCount = 0
+        for _, rec in ipairs(roster) do
+            if rec.Kind == "Event" and not Config.World.BossAlertEvents then
+                -- Skip world events in HUD when Alert World Events is disabled
+            else
+                if rec.State == "ACTIVE" then
+                    activeCount += 1
+                end
+                if filterMode == "All" or rec.State == "ACTIVE" then
+                    table.insert(visibleRows, rec)
+                end
+            end
+        end
+
+        table.sort(visibleRows, function(a, b)
+            local wa = stateOrderWeight(a.State)
+            local wb = stateOrderWeight(b.State)
+            if wa ~= wb then
+                return wa < wb
+            end
+            if (a.DistMeters or 99999) ~= (b.DistMeters or 99999) then
+                return (a.DistMeters or 99999) < (b.DistMeters or 99999)
+            end
+            return a.Name < b.Name
+        end)
+
+        local sigParts = { filterMode, tostring(activeCount), tostring(Config.World.BossShowGuards == true) }
+        for _, rec in ipairs(visibleRows) do
+            table.insert(sigParts, string.format("%s:%s:%s:%d:%s:%d",
+                rec.Id, rec.State, rec.Zone, rec.HP or 0, tostring(rec.DistMeters or -1), rec.GuardsCount or 0))
+        end
+        local sig = table.concat(sigParts, "|")
+        if not force and sig == lastHudSig then
+            return
+        end
+        lastHudSig = sig
+
+        bhTitle.Text = string.format("BOSS TRACKER · %d Active", activeCount)
+        bhTitle.TextColor3 = (activeCount > 0) and Color3.fromRGB(251, 191, 36) or THEME.TextPrimary
+        bhDot.BackgroundColor3 = (activeCount > 0) and Color3.fromRGB(34, 197, 94) or THEME.TextMuted
+        hudStroke.Color = (activeCount > 0) and Color3.fromRGB(245, 158, 11) or THEME.Border
+        bhFilterBtn.Text = filterMode
+
+        emptyLbl.Visible = (#visibleRows == 0)
+        local seenIds: { [string]: boolean } = {}
+        local showGuards = Config.World.BossShowGuards ~= false
+
+        for idx, rec in ipairs(visibleRows) do
+            seenIds[rec.Id] = true
+            local slot = rowPool[rec.Id] or createBossRowSlot(rec.Id)
+            if slot.LastOrder ~= idx then
+                slot.Row.LayoutOrder = idx
+                slot.LastOrder = idx
+            end
+
+            local isActive = (rec.State == "ACTIVE")
+            local isDead = (rec.State == "DEAD")
+            slot.CurrentActive = isActive
+            slot.CurrentPos = rec.Position
+            slot.CurrentTitle = rec.Name .. " (" .. rec.Zone .. ")"
+
+            if slot.LastBadgeText ~= rec.State then
+                slot.LastBadgeText = rec.State
+                slot.Badge.Text = rec.State
+            end
+            if isActive then
+                local accentCol = (rec.Kind == "Event") and Color3.fromRGB(56, 189, 248) or Color3.fromRGB(34, 197, 94)
+                slot.Badge.BackgroundColor3 = accentCol
+                slot.Badge.TextColor3 = Color3.fromRGB(10, 14, 20)
+                slot.Strip.BackgroundColor3 = rec.Color or Color3.fromRGB(245, 158, 11)
+                slot.NameLbl.TextColor3 = THEME.TextPrimary
+                slot.RowStroke.Color = rec.Color or Color3.fromRGB(245, 158, 11)
+                slot.RowStroke.Transparency = 0.25
+                slot.Row.BackgroundTransparency = 0.14
+            elseif isDead then
+                slot.Badge.BackgroundColor3 = Color3.fromRGB(220, 38, 38)
+                slot.Badge.TextColor3 = Color3.fromRGB(255, 255, 255)
+                slot.Strip.BackgroundColor3 = Color3.fromRGB(220, 38, 38)
+                slot.NameLbl.TextColor3 = THEME.TextSecondary
+                slot.RowStroke.Color = THEME.Border
+                slot.RowStroke.Transparency = 0.55
+                slot.Row.BackgroundTransparency = 0.26
+            else
+                slot.Badge.BackgroundColor3 = Color3.fromRGB(45, 55, 72)
+                slot.Badge.TextColor3 = THEME.TextSecondary
+                slot.Strip.BackgroundColor3 = THEME.TextMuted
+                slot.NameLbl.TextColor3 = THEME.TextSecondary
+                slot.RowStroke.Color = THEME.Border
+                slot.RowStroke.Transparency = 0.65
+                slot.Row.BackgroundTransparency = 0.34
+            end
+
+            if slot.LastName ~= rec.Name then
+                slot.LastName = rec.Name
+                slot.NameLbl.Text = rec.Name
+            end
+
+            local zoneStr: string
+            if isActive then
+                if showGuards and (rec.GuardsCount or 0) > 0 then
+                    zoneStr = string.format("%s · %d Guards", rec.Zone, rec.GuardsCount)
+                else
+                    zoneStr = rec.Zone .. " (Click -> Map)"
+                end
+            elseif isDead then
+                zoneStr = rec.Zone .. " · Dead"
+            else
+                zoneStr = "Zone: " .. rec.DefaultZone
+            end
+            if slot.LastZone ~= zoneStr then
+                slot.LastZone = zoneStr
+                slot.ZoneLbl.Text = zoneStr
+            end
+
+            local infoStr: string
+            if isActive then
+                local distPart = rec.DistMeters and string.format("%dm", rec.DistMeters) or "--"
+                if (rec.MaxHP or 0) > 0 then
+                    infoStr = string.format("%dHP · %s", rec.HP, distPart)
+                else
+                    infoStr = "LIVE · " .. distPart
+                end
+                slot.InfoLbl.TextColor3 = Color3.fromRGB(251, 191, 36)
+            elseif isDead then
+                infoStr = rec.DistMeters and string.format("Dead · %dm", rec.DistMeters) or "Eliminated"
+                slot.InfoLbl.TextColor3 = Color3.fromRGB(248, 113, 113)
+            else
+                infoStr = "Not Spawned"
+                slot.InfoLbl.TextColor3 = THEME.TextMuted
+            end
+            if slot.LastInfo ~= infoStr then
+                slot.LastInfo = infoStr
+                slot.InfoLbl.Text = infoStr
+            end
+
+            if not slot.Row.Visible then
+                slot.Row.Visible = true
+            end
+        end
+
+        for id, slot in pairs(rowPool) do
+            if not seenIds[id] and slot.Row.Visible then
+                slot.Row.Visible = false
+            end
+        end
+
+        local contentH = (#visibleRows > 0) and (#visibleRows * 38 - 4) or 32
+        bhScroll.CanvasSize = UDim2.fromOffset(0, contentH)
+        if force or lastRowCount ~= #visibleRows then
+            lastRowCount = #visibleRows
+            local targetH = (#visibleRows == 0) and 86 or math.clamp(54 + contentH, 92, 312)
+            bossHud.Size = UDim2.fromOffset(334, targetH)
+        end
+    end
+
+    Session.Bind(bhFilterBtn.MouseButton1Click, function()
+        Config.World.BossFilter = (Config.World.BossFilter == "Active") and "All" or "Active"
+        refreshBossHud(true)
+        UI.RefreshAll()
+    end)
+
+    Session.Bind(bhCloseBtn.MouseButton1Click, function()
+        Config.World.BossShowHUD = false
+        bossHud.Visible = false
+        UI.RefreshAll()
+    end)
 
     World._BossHudFrame = bossHud
-    World._BossHudText = bhLbl
+    World.RefreshBossHud = refreshBossHud
 end)()
 
 -- Live Server Check Reports HUD (draggable, translucent, shows live UAC flags & KDR for all players)
@@ -7046,7 +7855,8 @@ end)()
         sizePx: number,
         zOrder: number,
         labelText: string,
-        labelCol: Color3?
+        labelCol: Color3?,
+        strokeCol: Color3?
     )
         if u < -0.02 or u > 1.02 or v < -0.02 or v > 1.02 then
             return
@@ -7059,6 +7869,7 @@ end)()
         end
         blip.Holder.Position = UDim2.fromScale(math.clamp(u, 0, 1), math.clamp(v, 0, 1))
         blip.Dot.BackgroundColor3 = col
+        blip.Stroke.Color = strokeCol or Color3.fromRGB(10, 12, 16)
         if blip.LastSizePx ~= sizePx then
             blip.LastSizePx = sizePx
             blip.Dot.Size = UDim2.fromOffset(sizePx, sizePx)
@@ -7244,6 +8055,28 @@ end)()
             return text
         end
 
+        -- Plot Active Bosses & World Events FIRST so labels always have priority over players/exits
+        if cfg.ShowBosses ~= false and World._ActiveBossList then
+            for _, rec in ipairs(World._ActiveBossList) do
+                if rec.Position and (rec.Kind ~= "Event" or Config.World.BossAlertEvents) then
+                    local u, v = worldToMapUV(rec.Position, activeSizeReal)
+                    local col = rec.Color or Config.AIESP.BossColor
+                    local key = "B_" .. rec.Id
+                    local prefix = (rec.Kind == "Event") and "[EVT] " or "[BOSS] "
+                    local tag = prefix .. rec.Name
+                    if showDist and rec.DistMeters then
+                        tag = string.format("%s %dm", tag, rec.DistMeters)
+                    end
+                    local hudTag = allocLabel(placedHudLabels, hudSpanPx, u, v, tag)
+                    applyBlipState(hudPool, markerLayer, seen, key, u, v, col, 11, 18, hudTag, col, Color3.new(1, 1, 1))
+                    if renderOverlay and nativeOverlay then
+                        local natTag = allocLabel(placedNativeLabels, nativeSpanPx, u, v, tag)
+                        applyBlipState(nativePool, nativeOverlay, seen, key, u, v, col, 13, 28, natTag, col, Color3.new(1, 1, 1))
+                    end
+                end
+            end
+        end
+
         if cfg.ShowPlayers then
             for _, plr in ipairs(Players:GetPlayers()) do
                 if plr ~= LocalPlayer then
@@ -7297,14 +8130,14 @@ end)()
         end
 
         if cfg.ShowAI then
+            local bossModels = World._ActiveBossModels
             for model, entry in pairs(Actors) do
-                if entry.IsAI and model.Parent then
+                if entry.IsAI and model.Parent and not (cfg.ShowBosses ~= false and bossModels and bossModels[model]) then
                     local hum = model:FindFirstChildOfClass("Humanoid")
                     local root = model:FindFirstChild("HumanoidRootPart") :: BasePart? or model.PrimaryPart
                     if hum and root and hum.Health > 0 then
                         local u, v = worldToMapUV(root.Position, activeSizeReal)
-                        local ln = model.Name:lower()
-                        local isBoss = ln:find("whisper") or ln:find("dozer") or ln:find("death") or ln:find("boss") or ln:find("anton")
+                        local isBoss = World._IsBossModel and World._IsBossModel(model) or false
                         local col = isBoss and Config.AIESP.BossColor or Config.AIESP.Color
                         local sz = isBoss and 8 or 5
                         local tag = isBoss and ("BOSS: " .. model.Name) or ""
@@ -7371,6 +8204,22 @@ end)()
 
         if not mapHud.Visible then
             mapHud.Visible = true
+        end
+    end
+
+    function World._FocusMapOnPos(pos: Vector3, title: string?)
+        local u, v = worldToMapUV(pos, activeSizeReal)
+        Config.Map.Enabled = true
+        Config.Map.FollowMe = false
+        if (Config.Map.Zoom or 1) < 2.2 then
+            Config.Map.Zoom = 2.2
+        end
+        panU = math.clamp(u - 0.5, -0.5, 0.5)
+        panV = math.clamp(v - 0.5, -0.5, 0.5)
+        UI.RefreshAll()
+        World.UpdateMapHud()
+        if title and World._Notify then
+            World._Notify("Map Focused", title, "info")
         end
     end
 
@@ -9522,6 +10371,11 @@ do
         end
         addPopupToggle(pop, "Overlay Game Map (M)", function() return Config.Map.OverlayNative end, function(v) Config.Map.OverlayNative = v end)
         addPopupToggle(pop, "Show Self", function() return Config.Map.ShowSelf end, function(v) Config.Map.ShowSelf = v end)
+        addPopupToggle(pop, "Show Bosses", function() return Config.Map.ShowBosses ~= false end, function(v)
+            Config.Map.ShowBosses = v
+            if World._MarkBossDirty then World._MarkBossDirty() end
+            UI.RefreshAll()
+        end)
         addPopupToggle(pop, "Show NPC / Boss", function() return Config.Map.ShowAI end, function(v) Config.Map.ShowAI = v end)
         addPopupToggle(pop, "Show Exits", function() return Config.Map.ShowExits end, function(v) Config.Map.ShowExits = v end)
         addPopupToggle(pop, "Show Corpses", function() return Config.Map.ShowCorpses end, function(v) Config.Map.ShowCorpses = v end)
@@ -9647,12 +10501,44 @@ end
     UI.AddToggle(secFeat, "Render Players", function() return Config.World.RenderPlayers end, function(v)
         Config.World.RenderPlayers = v
     end)
-    UI.AddToggleWithConfig(secFeat, "Boss Checker", function() return Config.World.BossChecker end, function(v)
+    UI.AddToggleWithConfig(secFeat, "Boss Notify", function() return Config.World.BossChecker end, function(v)
         Config.World.BossChecker = v
+        if World._MarkBossDirty then
+            World._MarkBossDirty()
+        end
+        if v then
+            pcall(World.Step, false)
+        end
+        if World.RefreshBossHud then
+            World.RefreshBossHud(true)
+        end
     end, function(pop)
-        addPopupToggle(pop, "Notify on Spawn", function() return Config.World.BossNotify end, function(v) Config.World.BossNotify = v end)
-        addPopupToggle(pop, "Alert World Events", function() return Config.World.BossAlertEvents end, function(v) Config.World.BossAlertEvents = v end)
-        addPopupToggle(pop, "Show Status HUD", function() return Config.World.BossShowHUD end, function(v) Config.World.BossShowHUD = v end)
+        addPopupToggle(pop, "Toast Spawn / Death Alerts", function() return Config.World.BossNotify end, function(v) Config.World.BossNotify = v end)
+        addPopupToggle(pop, "Track World Events", function() return Config.World.BossAlertEvents end, function(v)
+            Config.World.BossAlertEvents = v
+            if World._MarkBossDirty then World._MarkBossDirty() end
+            if World.RefreshBossHud then World.RefreshBossHud(true) end
+        end)
+        addPopupToggle(pop, "Show Boss Tracker HUD", function() return Config.World.BossShowHUD end, function(v)
+            Config.World.BossShowHUD = v
+            if World._MarkBossDirty then World._MarkBossDirty() end
+            if World.RefreshBossHud then World.RefreshBossHud(true) end
+        end)
+        addPopupToggle(pop, "Show Bosses on Map", function() return Config.Map.ShowBosses ~= false end, function(v)
+            Config.Map.ShowBosses = v
+            if World._MarkBossDirty then World._MarkBossDirty() end
+            UI.RefreshAll()
+        end)
+        addPopupToggle(pop, "Show Guard Count", function() return Config.World.BossShowGuards ~= false end, function(v)
+            Config.World.BossShowGuards = v
+            if World.RefreshBossHud then World.RefreshBossHud(true) end
+        end)
+        UI._AddPopupCycle(pop, "HUD Filter", { "All", "Active" }, function()
+            return Config.World.BossFilter or "All"
+        end, function(v)
+            Config.World.BossFilter = v
+            if World.RefreshBossHud then World.RefreshBossHud(true) end
+        end)
     end, nil, true)
 
     UI.AddToggleWithConfig(secFeat, "ExitLocations", function() return Config.ExitESP.Enabled end, function(v)
@@ -10026,6 +10912,9 @@ do
         UI.RefreshAll()
         if Misc.RefreshReportsHud then
             Misc.RefreshReportsHud(true)
+        end
+        if World.RefreshBossHud then
+            World.RefreshBossHud(true)
         end
         if World.UpdateMapHud then
             World.UpdateMapHud()
@@ -11418,6 +12307,11 @@ ConfigMgr._ApplyUI = function()
     elseif Misc._ReportsHud then
         (Misc._ReportsHud :: GuiObject).Visible = false
     end
+    if Misc._BootComplete and World.RefreshBossHud then
+        World.RefreshBossHud(true)
+    elseif World._BossHudFrame then
+        (World._BossHudFrame :: GuiObject).Visible = false
+    end
     if Misc._BootComplete and World.UpdateMapHud then
         World.UpdateMapHud()
     end
@@ -11606,6 +12500,9 @@ end
     pcall(UI.RefreshAll)
     if Misc.RefreshReportsHud then
         pcall(Misc.RefreshReportsHud, true)
+    end
+    if World.RefreshBossHud then
+        pcall(World.RefreshBossHud, true)
     end
     if World.UpdateMapHud then
         pcall(World.UpdateMapHud)

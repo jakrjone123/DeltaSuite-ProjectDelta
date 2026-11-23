@@ -380,6 +380,27 @@ local function createDefaultConfig()
             ShowTimer = true,
             Tracers = false,
         },
+        Map = {
+            Enabled = true,
+            OverlayNative = true,
+            ShowSelf = true,
+            ShowPlayers = true,
+            ShowNames = true,
+            ShowDistance = false,
+            ShowAI = false,
+            ShowExits = true,
+            ShowCorpses = false,
+            FollowMe = false,
+            Zoom = 1.0,
+            Size = 256,
+            Opacity = 92,
+            PosX = -1,
+            PosY = -1,
+            SelfColor = Color3.fromRGB(56, 189, 248),
+            EnemyColor = Color3.fromRGB(239, 68, 68),
+            SquadColor = Color3.fromRGB(34, 197, 94),
+            FriendColor = Color3.fromRGB(250, 204, 21),
+        },
         World = {
             Fullbright = false,
             Brightness = 2.6,
@@ -4788,6 +4809,7 @@ function Misc._HideAllVisualsNow()
     if Combat._SilentLine then Combat._SilentLine.Visible = false end
     if Combat._SilentDot then Combat._SilentDot.Visible = false end
     if World.HideRadar then World.HideRadar() end
+    if World.HideMapHud then World.HideMapHud() end
     if World._BossHudFrame then (World._BossHudFrame :: GuiObject).Visible = false end
     if Misc._Watermark then Misc._Watermark.Visible = false end
     if Misc._TargetHud then Misc._TargetHud.Visible = false end
@@ -6534,6 +6556,791 @@ end)()
     Misc.RefreshReportsHud = refreshReportsHud
 end)()
 
+-- Tactical Map HUD (Default ON in Visuals, exact Project Delta EstonianBorderMap coordinates + native M map overlay)
+;(function()
+    local DEFAULT_TILES = {
+        S1 = "rbxassetid://113603821842860",
+        S2 = "rbxassetid://136072744709853",
+        S3 = "rbxassetid://89544624909963",
+        S4 = "rbxassetid://71539505443256",
+    }
+    local SELF_ARROW_IMG = "rbxassetid://123081333233234"
+    local FALLBACK_SIZE_REAL = 8050
+
+    local activeSizeReal = FALLBACK_SIZE_REAL
+    local activeMapName = "Estonian Border"
+    local activeTiles = {
+        S1 = DEFAULT_TILES.S1,
+        S2 = DEFAULT_TILES.S2,
+        S3 = DEFAULT_TILES.S3,
+        S4 = DEFAULT_TILES.S4,
+    }
+
+    local mapHud = Instance.new("Frame")
+    mapHud.Name = "DeltaMapHUD"
+    mapHud.AnchorPoint = Vector2.new(0, 0)
+    mapHud.Position = UDim2.fromOffset(16, 118)
+    mapHud.Size = UDim2.fromOffset(268, 292)
+    mapHud.BackgroundColor3 = THEME.BgMain
+    mapHud.BackgroundTransparency = 0.22
+    mapHud.ClipsDescendants = true
+    mapHud.Visible = true
+    mapHud.ZIndex = 12
+    mapHud.Parent = ScreenGui
+    addCorner(mapHud, 8)
+    addStroke(mapHud, THEME.Border, 1, 0.25)
+
+    local mhHeader = Instance.new("Frame")
+    mhHeader.Size = UDim2.new(1, 0, 0, 26)
+    mhHeader.BackgroundColor3 = THEME.BgSidebar
+    mhHeader.BackgroundTransparency = 0.24
+    mhHeader.BorderSizePixel = 0
+    mhHeader.ZIndex = 13
+    mhHeader.Parent = mapHud
+
+    local mhTitle = Instance.new("TextLabel")
+    mhTitle.BackgroundTransparency = 1
+    mhTitle.Position = UDim2.fromOffset(10, 0)
+    mhTitle.Size = UDim2.new(1, -104, 1, 0)
+    mhTitle.Font = Enum.Font.GothamBold
+    mhTitle.TextSize = 11
+    mhTitle.TextColor3 = THEME.TextPrimary
+    mhTitle.TextXAlignment = Enum.TextXAlignment.Left
+    mhTitle.TextTruncate = Enum.TextTruncate.AtEnd
+    mhTitle.Text = "MAP · Estonian Border"
+    mhTitle.ZIndex = 14
+    mhTitle.Parent = mhHeader
+
+    local function makeHdrBtn(xOff: number, w: number, txt: string): TextButton
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.fromOffset(w, 18)
+        btn.Position = UDim2.new(1, xOff, 0.5, -9)
+        btn.BackgroundColor3 = THEME.BgControl
+        btn.Font = Enum.Font.GothamBold
+        btn.TextSize = 10
+        btn.TextColor3 = THEME.TextSecondary
+        btn.Text = txt
+        btn.AutoButtonColor = false
+        btn.ZIndex = 14
+        btn.Parent = mhHeader
+        addCorner(btn, 4)
+        addStroke(btn, THEME.Border, 1, 0.4)
+        return btn
+    end
+
+    local mhFollowBtn = makeHdrBtn(-92, 22, "F")
+    local mhZoomOutBtn = makeHdrBtn(-68, 18, "-")
+    local mhZoomInBtn = makeHdrBtn(-48, 18, "+")
+    local mhCloseBtn = makeHdrBtn(-24, 20, "X")
+
+    local mapViewport = Instance.new("Frame")
+    mapViewport.Name = "MapViewport"
+    mapViewport.Position = UDim2.fromOffset(6, 30)
+    mapViewport.Size = UDim2.new(1, -12, 1, -36)
+    mapViewport.BackgroundColor3 = Color3.fromRGB(14, 19, 24)
+    mapViewport.BorderSizePixel = 0
+    mapViewport.ClipsDescendants = true
+    mapViewport.ZIndex = 13
+    mapViewport.Parent = mapHud
+    addCorner(mapViewport, 6)
+    addStroke(mapViewport, THEME.Border, 1, 0.45)
+
+    local mapCanvas = Instance.new("Frame")
+    mapCanvas.Name = "MapCanvas"
+    mapCanvas.Position = UDim2.fromScale(0, 0)
+    mapCanvas.Size = UDim2.fromScale(1, 1)
+    mapCanvas.BackgroundTransparency = 1
+    mapCanvas.ZIndex = 13
+    mapCanvas.Parent = mapViewport
+
+    local tileFrames: { [string]: ImageLabel } = {}
+    local tileSpecs = {
+        { Key = "S1", Pos = UDim2.fromScale(0, 0) },
+        { Key = "S2", Pos = UDim2.fromScale(0.5, 0) },
+        { Key = "S3", Pos = UDim2.fromScale(0, 0.5) },
+        { Key = "S4", Pos = UDim2.fromScale(0.5, 0.5) },
+    }
+    for _, spec in ipairs(tileSpecs) do
+        local img = Instance.new("ImageLabel")
+        img.Name = spec.Key
+        img.Position = spec.Pos
+        img.Size = UDim2.fromScale(0.5, 0.5)
+        img.BackgroundTransparency = 1
+        img.BorderSizePixel = 0
+        img.ScaleType = Enum.ScaleType.Stretch
+        img.Image = activeTiles[spec.Key]
+        img.ImageTransparency = 0.08
+        img.ZIndex = 13
+        img.Parent = mapCanvas
+        tileFrames[spec.Key] = img
+    end
+
+    local markerLayer = Instance.new("Frame")
+    markerLayer.Name = "Markers"
+    markerLayer.Size = UDim2.fromScale(1, 1)
+    markerLayer.BackgroundTransparency = 1
+    markerLayer.ZIndex = 15
+    markerLayer.Parent = mapCanvas
+
+    local infoPill = Instance.new("Frame")
+    infoPill.AnchorPoint = Vector2.new(0, 1)
+    infoPill.Position = UDim2.new(0, 6, 1, -6)
+    infoPill.Size = UDim2.fromOffset(0, 16)
+    infoPill.AutomaticSize = Enum.AutomaticSize.X
+    infoPill.BackgroundColor3 = Color3.fromRGB(10, 13, 20)
+    infoPill.BackgroundTransparency = 0.28
+    infoPill.BorderSizePixel = 0
+    infoPill.ZIndex = 22
+    infoPill.Parent = mapViewport
+    addCorner(infoPill, 4)
+    addStroke(infoPill, THEME.Border, 1, 0.45)
+
+    local infoPad = Instance.new("UIPadding")
+    infoPad.PaddingLeft = UDim.new(0, 6)
+    infoPad.PaddingRight = UDim.new(0, 6)
+    infoPad.Parent = infoPill
+
+    local infoLbl = Instance.new("TextLabel")
+    infoLbl.BackgroundTransparency = 1
+    infoLbl.Size = UDim2.fromOffset(0, 16)
+    infoLbl.AutomaticSize = Enum.AutomaticSize.X
+    infoLbl.Font = Enum.Font.GothamMedium
+    infoLbl.TextSize = 10
+    infoLbl.TextColor3 = THEME.TextPrimary
+    infoLbl.Text = "1.0x | 0 Plrs"
+    infoLbl.ZIndex = 23
+    infoLbl.Parent = infoPill
+
+    type MapBlip = {
+        Holder: Frame,
+        Dot: Frame,
+        Stroke: UIStroke,
+        Label: TextLabel,
+        LastText: string,
+        LastSizePx: number,
+        LastZ: number,
+    }
+
+    local function createSelfMarker(parent: Frame, baseZ: number, sizePx: number): { Holder: Frame, Arrow: ImageLabel, Dot: Frame, Stroke: UIStroke }
+        local holder = Instance.new("Frame")
+        holder.Name = "DeltaSelfDot"
+        holder.AnchorPoint = Vector2.new(0.5, 0.5)
+        holder.Size = UDim2.fromOffset(sizePx + 10, sizePx + 10)
+        holder.BackgroundTransparency = 1
+        holder.Visible = false
+        holder.ZIndex = baseZ
+        holder.Parent = parent
+
+        local arrow = Instance.new("ImageLabel")
+        arrow.Name = "HeadingArrow"
+        arrow.AnchorPoint = Vector2.new(0.5, 0.5)
+        arrow.Position = UDim2.fromScale(0.5, 0.5)
+        arrow.Size = UDim2.fromOffset(sizePx + 10, sizePx + 10)
+        arrow.BackgroundTransparency = 1
+        arrow.Image = SELF_ARROW_IMG
+        arrow.ImageColor3 = THEME.Accent
+        arrow.ZIndex = baseZ + 1
+        arrow.Parent = holder
+
+        local dot = Instance.new("Frame")
+        dot.Name = "CoreDot"
+        dot.AnchorPoint = Vector2.new(0.5, 0.5)
+        dot.Position = UDim2.fromScale(0.5, 0.5)
+        dot.Size = UDim2.fromOffset(7, 7)
+        dot.BackgroundColor3 = Color3.new(1, 1, 1)
+        dot.BorderSizePixel = 0
+        dot.ZIndex = baseZ + 2
+        dot.Parent = holder
+        addCorner(dot, 9)
+        local st = addStroke(dot, THEME.Accent, 1.5, 0)
+
+        return { Holder = holder, Arrow = arrow, Dot = dot, Stroke = st }
+    end
+
+    local function createBlip(parent: Frame, key: string): MapBlip
+        local holder = Instance.new("Frame")
+        holder.Name = "Blip_" .. key
+        holder.AnchorPoint = Vector2.new(0.5, 0.5)
+        holder.Size = UDim2.fromOffset(10, 10)
+        holder.BackgroundTransparency = 1
+        holder.Visible = false
+        holder.ZIndex = 17
+        holder.Parent = parent
+
+        local dot = Instance.new("Frame")
+        dot.AnchorPoint = Vector2.new(0.5, 0.5)
+        dot.Position = UDim2.fromScale(0.5, 0.5)
+        dot.Size = UDim2.fromOffset(8, 8)
+        dot.BackgroundColor3 = Color3.fromRGB(239, 68, 68)
+        dot.BorderSizePixel = 0
+        dot.ZIndex = 17
+        dot.Parent = holder
+        addCorner(dot, 9)
+        local st = addStroke(dot, Color3.fromRGB(10, 12, 16), 1.2, 0.1)
+
+        local lbl = Instance.new("TextLabel")
+        lbl.AnchorPoint = Vector2.new(0.5, 0)
+        lbl.Position = UDim2.new(0.5, 0, 0.5, 5)
+        lbl.Size = UDim2.fromOffset(0, 12)
+        lbl.AutomaticSize = Enum.AutomaticSize.X
+        lbl.BackgroundTransparency = 1
+        lbl.Font = Enum.Font.GothamBold
+        lbl.TextSize = 10
+        lbl.TextColor3 = Color3.fromRGB(240, 244, 248)
+        lbl.TextStrokeColor3 = Color3.fromRGB(8, 10, 14)
+        lbl.TextStrokeTransparency = 0.2
+        lbl.Visible = false
+        lbl.ZIndex = 18
+        lbl.Parent = holder
+
+        return {
+            Holder = holder,
+            Dot = dot,
+            Stroke = st,
+            Label = lbl,
+            LastText = "",
+            LastSizePx = 8,
+            LastZ = 17,
+        }
+    end
+
+    local hudSelf = createSelfMarker(markerLayer, 20, 10)
+    local hudPool: { [string]: MapBlip } = {}
+
+    local nativeOverlay: Frame? = nil
+    local nativeSelf: { Holder: Frame, Arrow: ImageLabel, Dot: Frame, Stroke: UIStroke }? = nil
+    local nativePool: { [string]: MapBlip } = {}
+    local trackedMapMain: Frame? = nil
+
+    -- Header drag (reposition Map HUD) & Viewport pan/zoom
+    local draggingWin = false
+    local winDragStart: Vector2? = nil
+    local winStartPos: UDim2? = nil
+
+    local panU, panV = 0, 0
+    local panningMap = false
+    local panMouseStart: Vector2? = nil
+    local panStartU, panStartV = 0, 0
+
+    Session.Bind(mhHeader.InputBegan, function(inp: InputObject)
+        if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            draggingWin = true
+            winDragStart = Vector2.new(inp.Position.X, inp.Position.Y)
+            winStartPos = mapHud.Position
+        end
+    end)
+
+    Session.Bind(mapViewport.InputBegan, function(inp: InputObject)
+        if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            if not Config.Map.FollowMe and (Config.Map.Zoom or 1) > 1.01 then
+                panningMap = true
+                panMouseStart = Vector2.new(inp.Position.X, inp.Position.Y)
+                panStartU, panStartV = panU, panV
+            end
+        elseif inp.UserInputType == Enum.UserInputType.MouseButton2 then
+            panU, panV = 0, 0
+        end
+    end)
+
+    Session.Bind(UserInputService.InputChanged, function(inp: InputObject)
+        if draggingWin and winDragStart and winStartPos and inp.UserInputType == Enum.UserInputType.MouseMovement then
+            local delta = Vector2.new(inp.Position.X, inp.Position.Y) - winDragStart
+            local vp = Workspace.CurrentCamera and Workspace.CurrentCamera.ViewportSize or Vector2.new(1920, 1080)
+            local nx = math.clamp(winStartPos.X.Offset + delta.X, 4, math.max(4, vp.X - mapHud.AbsoluteSize.X - 4))
+            local ny = math.clamp(winStartPos.Y.Offset + delta.Y, 4, math.max(4, vp.Y - mapHud.AbsoluteSize.Y - 4))
+            Config.Map.PosX = nx
+            Config.Map.PosY = ny
+            mapHud.Position = UDim2.fromOffset(nx, ny)
+        elseif panningMap and panMouseStart and inp.UserInputType == Enum.UserInputType.MouseMovement then
+            local delta = Vector2.new(inp.Position.X, inp.Position.Y) - panMouseStart
+            local sz = math.max(mapViewport.AbsoluteSize.X, 1) * math.max(Config.Map.Zoom or 1, 1)
+            panU = math.clamp(panStartU - delta.X / sz, -0.5, 0.5)
+            panV = math.clamp(panStartV - delta.Y / sz, -0.5, 0.5)
+        elseif inp.UserInputType == Enum.UserInputType.MouseWheel and mapHud.Visible then
+            local ml = UserInputService:GetMouseLocation()
+            local ap = mapViewport.AbsolutePosition
+            local as = mapViewport.AbsoluteSize
+            if ml.X >= ap.X and ml.X <= ap.X + as.X and ml.Y >= ap.Y and ml.Y <= ap.Y + as.Y then
+                local nextZ = math.clamp(math.round(((Config.Map.Zoom or 1) + inp.Position.Z * 0.2) * 10) / 10, 1.0, 4.0)
+                if nextZ ~= Config.Map.Zoom then
+                    Config.Map.Zoom = nextZ
+                    if nextZ <= 1.01 then
+                        panU, panV = 0, 0
+                    end
+                    UI.RefreshAll()
+                end
+            end
+        end
+    end)
+
+    Session.Bind(UserInputService.InputEnded, function(inp: InputObject)
+        if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            draggingWin = false
+            panningMap = false
+        end
+    end)
+
+    Session.Bind(mhFollowBtn.MouseButton1Click, function()
+        Config.Map.FollowMe = not Config.Map.FollowMe
+        if Config.Map.FollowMe then
+            if (Config.Map.Zoom or 1) < 1.2 then
+                Config.Map.Zoom = 2.0
+            end
+        else
+            panU, panV = 0, 0
+        end
+        UI.RefreshAll()
+    end)
+    Session.Bind(mhZoomOutBtn.MouseButton1Click, function()
+        local nz = math.clamp(math.round(((Config.Map.Zoom or 1) - 0.4) * 10) / 10, 1.0, 4.0)
+        Config.Map.Zoom = nz
+        if nz <= 1.01 then
+            panU, panV = 0, 0
+        end
+        UI.RefreshAll()
+    end)
+    Session.Bind(mhZoomInBtn.MouseButton1Click, function()
+        Config.Map.Zoom = math.clamp(math.round(((Config.Map.Zoom or 1) + 0.4) * 10) / 10, 1.0, 4.0)
+        UI.RefreshAll()
+    end)
+    Session.Bind(mhCloseBtn.MouseButton1Click, function()
+        Config.Map.Enabled = false
+        if World.HideMapHud then
+            World.HideMapHud()
+        end
+        UI.RefreshAll()
+    end)
+
+    -- Exact Project Delta MapGPS conversion (`u = 0.5 + (X - 208) / SizeReal`, `v = 0.5 + (Z + 203) / SizeReal`)
+    local function worldToMapUV(pos: Vector3, sizeReal: number): (number, number)
+        local sr = (sizeReal and sizeReal > 100) and sizeReal or FALLBACK_SIZE_REAL
+        return 0.5 + (pos.X - 208) / sr, 0.5 + (pos.Z + 203) / sr
+    end
+
+    local function lookToRotDeg(look: Vector3): number
+        local fx, fz = look.X, look.Z
+        if fx * fx + fz * fz < 0.0001 then
+            return 0
+        end
+        return math.deg(math.atan2(fz, fx)) + 90
+    end
+
+    local lastScan = 0
+    local lastMetaTxt = ""
+    local lastAppliedSize = -1
+    local lastAppliedTileImg = { S1 = "", S2 = "", S3 = "", S4 = "" }
+    local lastTileAlpha = -1
+
+    local function syncGameMapSource(): (Frame?, boolean)
+        local now = os.clock()
+        local pg = LocalPlayer:FindFirstChild("PlayerGui")
+        local mainGui = pg and pg:FindFirstChild("MainGui")
+        local outerFrame = mainGui and mainGui:FindFirstChild("MainFrame")
+        local mapFrame = outerFrame and outerFrame:FindFirstChild("MapFrame")
+        local mapMain = mapFrame and mapFrame:FindFirstChild("MainFrame")
+        local mapOpen = (mapFrame and mapFrame:IsA("GuiObject") and mapFrame.Visible) == true
+
+        if now - lastScan >= 0.45 then
+            lastScan = now
+            local mapsFolder = mapMain and mapMain:FindFirstChild("Maps")
+            if mapsFolder then
+                local chosen: GuiObject? = nil
+                for _, ch in ipairs(mapsFolder:GetChildren()) do
+                    if ch:IsA("GuiObject") and ch.Visible then
+                        chosen = ch
+                        break
+                    end
+                end
+                if not chosen then
+                    chosen = mapsFolder:FindFirstChild("EstonianBorderMap") :: GuiObject?
+                end
+                if chosen then
+                    local sr = tonumber(chosen:GetAttribute("SizeReal"))
+                    if sr and sr > 100 then
+                        activeSizeReal = sr
+                    end
+                    local mn = chosen:GetAttribute("MapName")
+                    local baseName = (type(mn) == "string" and mn ~= "") and mn or "Estonian Border"
+                    if chosen.Name:find("Winter") then
+                        activeMapName = baseName .. " (Winter)"
+                    else
+                        activeMapName = baseName
+                    end
+                    for _, k in ipairs({ "S1", "S2", "S3", "S4" }) do
+                        local tile = chosen:FindFirstChild(k)
+                        if tile and tile:IsA("ImageLabel") and tile.Image ~= "" then
+                            activeTiles[k] = tile.Image
+                        end
+                    end
+                end
+            end
+        end
+
+        return (mapMain and mapMain:IsA("Frame")) and mapMain or nil, mapOpen
+    end
+
+    local function ensureNativeOverlay(mapMain: Frame)
+        if trackedMapMain ~= mapMain or not nativeOverlay or not nativeOverlay.Parent then
+            for _, ch in ipairs(mapMain:GetChildren()) do
+                if ch.Name == "DeltaNativeMapOverlay" then
+                    pcall(function() ch:Destroy() end)
+                end
+            end
+            table.clear(nativePool)
+            local ov = Instance.new("Frame")
+            ov.Name = "DeltaNativeMapOverlay"
+            ov.AnchorPoint = Vector2.new(0.5, 0.5)
+            ov.Position = UDim2.fromScale(0.5, 0.5)
+            ov.Size = UDim2.fromScale(1, 1)
+            ov.BackgroundTransparency = 1
+            ov.ZIndex = 25
+            ov.Visible = false
+            ov.Parent = mapMain
+            Session.Track(ov)
+            nativeOverlay = ov
+            nativeSelf = createSelfMarker(ov, 29, 12)
+            trackedMapMain = mapMain
+        end
+    end
+
+    local function applyBlipState(
+        pool: { [string]: MapBlip },
+        parentLayer: Frame,
+        seen: { [string]: boolean },
+        key: string,
+        u: number,
+        v: number,
+        col: Color3,
+        sizePx: number,
+        zOrder: number,
+        labelText: string,
+        labelCol: Color3?
+    )
+        if u < -0.02 or u > 1.02 or v < -0.02 or v > 1.02 then
+            return
+        end
+        seen[key] = true
+        local blip = pool[key]
+        if not blip or not blip.Holder.Parent then
+            blip = createBlip(parentLayer, key)
+            pool[key] = blip
+        end
+        blip.Holder.Position = UDim2.fromScale(math.clamp(u, 0, 1), math.clamp(v, 0, 1))
+        blip.Dot.BackgroundColor3 = col
+        if blip.LastSizePx ~= sizePx then
+            blip.LastSizePx = sizePx
+            blip.Dot.Size = UDim2.fromOffset(sizePx, sizePx)
+            blip.Label.Position = UDim2.new(0.5, 0, 0.5, math.floor(sizePx * 0.5) + 2)
+        end
+        if blip.LastZ ~= zOrder then
+            blip.LastZ = zOrder
+            blip.Holder.ZIndex = zOrder
+            blip.Dot.ZIndex = zOrder
+            blip.Label.ZIndex = zOrder + 1
+        end
+        if labelText ~= "" then
+            if blip.LastText ~= labelText then
+                blip.LastText = labelText
+                blip.Label.Text = labelText
+            end
+            blip.Label.TextColor3 = labelCol or col
+            if not blip.Label.Visible then
+                blip.Label.Visible = true
+            end
+        elseif blip.Label.Visible then
+            blip.Label.Visible = false
+        end
+        if not blip.Holder.Visible then
+            blip.Holder.Visible = true
+        end
+    end
+
+    local function hideUnusedBlips(pool: { [string]: MapBlip }, seen: { [string]: boolean })
+        for key, blip in pairs(pool) do
+            if not seen[key] then
+                if blip.Holder.Parent then
+                    blip.Holder.Visible = false
+                else
+                    pool[key] = nil
+                end
+            end
+        end
+    end
+
+    function World.HideMapHud()
+        if mapHud.Visible then
+            mapHud.Visible = false
+        end
+        if nativeOverlay and nativeOverlay.Visible then
+            nativeOverlay.Visible = false
+        end
+    end
+
+    function World.UpdateMapHud(_vp: Vector2?)
+        local cfg = Config.Map
+        if not cfg or not cfg.Enabled or (Config.Misc.PanicMode and Config.Misc.PanicHideVisuals) then
+            World.HideMapHud()
+            return
+        end
+
+        local mapMain, mapOpen = syncGameMapSource()
+        local renderOverlay = mapOpen and cfg.OverlayNative and mapMain ~= nil
+        if renderOverlay and mapMain then
+            ensureNativeOverlay(mapMain)
+            if nativeOverlay and not nativeOverlay.Visible then
+                nativeOverlay.Visible = true
+            end
+        elseif nativeOverlay and nativeOverlay.Visible then
+            nativeOverlay.Visible = false
+        end
+
+        -- Update HUD dimensions & glass styling cleanly when changed
+        local mapSize = math.clamp(cfg.Size or 256, 180, 420)
+        if lastAppliedSize ~= mapSize then
+            lastAppliedSize = mapSize
+            mapHud.Size = UDim2.fromOffset(mapSize + 12, mapSize + 36)
+        end
+        if (cfg.PosX or -1) >= 0 and (cfg.PosY or -1) >= 0 then
+            if not draggingWin then
+                local vpNow = Workspace.CurrentCamera and Workspace.CurrentCamera.ViewportSize or Vector2.new(1920, 1080)
+                local px = math.clamp(cfg.PosX, 4, math.max(4, vpNow.X - mapSize - 16))
+                local py = math.clamp(cfg.PosY, 4, math.max(4, vpNow.Y - mapSize - 40))
+                mapHud.Position = UDim2.fromOffset(px, py)
+            end
+        else
+            mapHud.Position = UDim2.fromOffset(16, 118)
+        end
+
+        local titleTxt = "MAP · " .. activeMapName
+        if mhTitle.Text ~= titleTxt then
+            mhTitle.Text = titleTxt
+        end
+        mhFollowBtn.TextColor3 = cfg.FollowMe and THEME.Accent or THEME.TextSecondary
+
+        local tileTrans = 1 - math.clamp((cfg.Opacity or 92) / 100, 0.35, 1.0)
+        local tileStyleChanged = math.abs(lastTileAlpha - tileTrans) > 0.005
+        if tileStyleChanged then
+            lastTileAlpha = tileTrans
+        end
+        for k, img in pairs(tileFrames) do
+            if lastAppliedTileImg[k] ~= activeTiles[k] then
+                lastAppliedTileImg[k] = activeTiles[k]
+                img.Image = activeTiles[k]
+            end
+            if tileStyleChanged then
+                img.ImageTransparency = tileTrans
+            end
+        end
+
+        local selfChar = LocalPlayer.Character
+        local selfRoot = selfChar and (selfChar:FindFirstChild("HumanoidRootPart") :: BasePart? or selfChar.PrimaryPart)
+        local hasSelf = false
+        local su, sv, sRot = 0.5, 0.5, 0
+        if selfRoot then
+            su, sv = worldToMapUV(selfRoot.Position, activeSizeReal)
+            sRot = lookToRotDeg(selfRoot.CFrame.LookVector)
+            hasSelf = true
+        end
+
+        -- Apply zoom & FollowMe / manual pan
+        local zoom = math.clamp(cfg.Zoom or 1.0, 1.0, 4.0)
+        mapCanvas.Size = UDim2.fromScale(zoom, zoom)
+        if zoom <= 1.005 then
+            mapCanvas.Position = UDim2.fromScale(0, 0)
+        else
+            local targetU = (cfg.FollowMe and hasSelf) and su or (0.5 + panU)
+            local targetV = (cfg.FollowMe and hasSelf) and sv or (0.5 + panV)
+            local minOff = 1 - zoom
+            local cx = math.clamp(0.5 - targetU * zoom, minOff, 0)
+            local cy = math.clamp(0.5 - targetV * zoom, minOff, 0)
+            mapCanvas.Position = UDim2.fromScale(cx, cy)
+        end
+
+        -- Update Self marker (point + facing heading arrow) on BOTH MapHUD and native M Map
+        local selfCol = cfg.SelfColor or THEME.Accent
+        if cfg.ShowSelf and hasSelf and su >= -0.05 and su <= 1.05 and sv >= -0.05 and sv <= 1.05 then
+            local selfPos = UDim2.fromScale(math.clamp(su, 0, 1), math.clamp(sv, 0, 1))
+            hudSelf.Holder.Position = selfPos
+            hudSelf.Arrow.Rotation = sRot
+            hudSelf.Arrow.ImageColor3 = selfCol
+            hudSelf.Stroke.Color = selfCol
+            if not hudSelf.Holder.Visible then
+                hudSelf.Holder.Visible = true
+            end
+            if renderOverlay and nativeSelf then
+                nativeSelf.Holder.Position = selfPos
+                nativeSelf.Arrow.Rotation = sRot
+                nativeSelf.Arrow.ImageColor3 = selfCol
+                nativeSelf.Stroke.Color = selfCol
+                if not nativeSelf.Holder.Visible then
+                    nativeSelf.Holder.Visible = true
+                end
+            end
+        else
+            if hudSelf.Holder.Visible then
+                hudSelf.Holder.Visible = false
+            end
+            if nativeSelf and nativeSelf.Holder.Visible then
+                nativeSelf.Holder.Visible = false
+            end
+        end
+
+        local seen: { [string]: boolean } = {}
+        local playerCount = 0
+        local showNames = cfg.ShowNames == true
+        local showDist = cfg.ShowDistance == true
+
+        local hudSpanPx = mapSize * zoom
+        local nativeSpanPx = (mapMain and mapMain.AbsoluteSize.X > 1) and mapMain.AbsoluteSize.X or 1009
+        local placedHudLabels: { { X: number, Y: number } } = {}
+        local placedNativeLabels: { { X: number, Y: number } } = {}
+        local function allocLabel(list: { { X: number, Y: number } }, spanPx: number, u: number, v: number, text: string): string
+            if text == "" then
+                return ""
+            end
+            local px, py = u * spanPx, v * spanPx
+            for _, pt in ipairs(list) do
+                if math.abs(px - pt.X) < 34 and math.abs(py - pt.Y) < 12 then
+                    return ""
+                end
+            end
+            table.insert(list, { X = px, Y = py })
+            return text
+        end
+
+        if cfg.ShowPlayers then
+            for _, plr in ipairs(Players:GetPlayers()) do
+                if plr ~= LocalPlayer then
+                    local ch = plr.Character
+                    local root = ch and (ch:FindFirstChild("HumanoidRootPart") :: BasePart? or ch.PrimaryPart or ch:FindFirstChild("Head") :: BasePart?)
+                    local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+                    if root and (not hum or hum.Health > 0) then
+                        playerCount += 1
+                        local u, v = worldToMapUV(root.Position, activeSizeReal)
+                        local isTeam = Delta.IsTeammate(plr)
+                        local isFriend = Delta.IsFriend(plr)
+                        local isDown = Delta.IsPlayerDowned(plr, ch)
+                        local col: Color3
+                        if isTeam then
+                            col = cfg.SquadColor or Config.PlayerESP.SquadColor
+                        elseif isFriend then
+                            col = cfg.FriendColor or Color3.fromRGB(250, 204, 21)
+                        elseif isDown then
+                            col = Config.PlayerESP.DownedColor
+                        else
+                            col = cfg.EnemyColor or Config.PlayerESP.EnemyColor
+                        end
+
+                        local tag = ""
+                        if showNames or showDist then
+                            local nm = showNames and (plr.DisplayName .. (isFriend and " [F]" or "")) or ""
+                            local dt = ""
+                            if showDist and selfRoot then
+                                local m = math.floor((root.Position - selfRoot.Position).Magnitude / 3.5 + 0.5)
+                                dt = string.format("%dm", m)
+                            end
+                            if nm ~= "" and dt ~= "" then
+                                tag = nm .. " " .. dt
+                            elseif nm ~= "" then
+                                tag = nm
+                            else
+                                tag = dt
+                            end
+                        end
+
+                        local key = "P_" .. tostring(plr.UserId)
+                        local hudTag = allocLabel(placedHudLabels, hudSpanPx, u, v, tag)
+                        applyBlipState(hudPool, markerLayer, seen, key, u, v, col, 8, 17, hudTag, col)
+                        if renderOverlay and nativeOverlay then
+                            local natTag = allocLabel(placedNativeLabels, nativeSpanPx, u, v, tag)
+                            applyBlipState(nativePool, nativeOverlay, seen, key, u, v, col, 10, 27, natTag, col)
+                        end
+                    end
+                end
+            end
+        end
+
+        if cfg.ShowAI then
+            for model, entry in pairs(Actors) do
+                if entry.IsAI and model.Parent then
+                    local hum = model:FindFirstChildOfClass("Humanoid")
+                    local root = model:FindFirstChild("HumanoidRootPart") :: BasePart? or model.PrimaryPart
+                    if hum and root and hum.Health > 0 then
+                        local u, v = worldToMapUV(root.Position, activeSizeReal)
+                        local ln = model.Name:lower()
+                        local isBoss = ln:find("whisper") or ln:find("dozer") or ln:find("death") or ln:find("boss") or ln:find("anton")
+                        local col = isBoss and Config.AIESP.BossColor or Config.AIESP.Color
+                        local sz = isBoss and 8 or 5
+                        local tag = isBoss and ("BOSS: " .. model.Name) or ""
+                        local key = "A_" .. tostring(model)
+                        local hudTag = allocLabel(placedHudLabels, hudSpanPx, u, v, tag)
+                        applyBlipState(hudPool, markerLayer, seen, key, u, v, col, sz, 16, hudTag, col)
+                        if renderOverlay and nativeOverlay then
+                            local natTag = allocLabel(placedNativeLabels, nativeSpanPx, u, v, tag)
+                            applyBlipState(nativePool, nativeOverlay, seen, key, u, v, col, sz + 2, 26, natTag, col)
+                        end
+                    end
+                end
+            end
+        end
+
+        if cfg.ShowExits or cfg.ShowCorpses then
+            for inst, tag in pairs(WorldTags) do
+                if tag.Root and tag.Root.Parent then
+                    if tag.Category == "Exit" and cfg.ShowExits then
+                        local u, v = worldToMapUV(tag.Root.Position, activeSizeReal)
+                        local col = Config.ExitESP.Color
+                        local key = "E_" .. tostring(inst)
+                        local rawLbl = showNames and "EXIT" or ""
+                        local hudLbl = allocLabel(placedHudLabels, hudSpanPx, u, v, rawLbl)
+                        applyBlipState(hudPool, markerLayer, seen, key, u, v, col, 6, 15, hudLbl, col)
+                        if renderOverlay and nativeOverlay then
+                            local natLbl = allocLabel(placedNativeLabels, nativeSpanPx, u, v, "EXIT")
+                            applyBlipState(nativePool, nativeOverlay, seen, key, u, v, col, 8, 25, natLbl, col)
+                        end
+                    elseif tag.Category == "Corpse" and cfg.ShowCorpses then
+                        local u, v = worldToMapUV(tag.Root.Position, activeSizeReal)
+                        local col = Config.CorpseESP.Color
+                        local key = "C_" .. tostring(inst)
+                        applyBlipState(hudPool, markerLayer, seen, key, u, v, col, 5, 15, "", col)
+                        if renderOverlay and nativeOverlay then
+                            applyBlipState(nativePool, nativeOverlay, seen, key, u, v, col, 7, 25, "", col)
+                        end
+                    end
+                end
+            end
+        end
+
+        hideUnusedBlips(hudPool, seen)
+        if renderOverlay then
+            hideUnusedBlips(nativePool, seen)
+        elseif next(nativePool) ~= nil then
+            for _, b in pairs(nativePool) do
+                if b.Holder.Visible then
+                    b.Holder.Visible = false
+                end
+            end
+        end
+
+        local metaStr: string
+        if hasSelf and selfRoot then
+            metaStr = string.format("%d, %d · %.1fx · %d Plrs", math.floor(selfRoot.Position.X + 0.5), math.floor(selfRoot.Position.Z + 0.5), zoom, playerCount)
+        else
+            metaStr = string.format("%.1fx · %d Plrs", zoom, playerCount)
+        end
+        if lastMetaTxt ~= metaStr then
+            lastMetaTxt = metaStr
+            infoLbl.Text = metaStr
+        end
+
+        if not mapHud.Visible then
+            mapHud.Visible = true
+        end
+    end
+
+    World._MapHudFrame = mapHud
+end)()
+
 -- Target Lock HUD (Top Center-Bottom)
 local TargetHudFrame = Instance.new("Frame")
 TargetHudFrame.Name = "TargetHUD"
@@ -6843,6 +7650,9 @@ function UI.ApplyGlassTheme()
     end
     if Misc._ReportsHud and (Misc._ReportsHud :: Instance).Parent then
         (Misc._ReportsHud :: Frame).BackgroundTransparency = math.clamp(g + 0.04, 0.12, 0.72)
+    end
+    if World._MapHudFrame and (World._MapHudFrame :: Instance).Parent then
+        (World._MapHudFrame :: Frame).BackgroundTransparency = math.clamp(g + 0.02, 0.10, 0.70)
     end
     for _, rec in ipairs(UI._GlassCards) do
         if rec.Frame.Parent then
@@ -8634,6 +9444,44 @@ do
         UI.AddColorPicker(p, "Quest Color", function() return Config.QuestESP.Color end, function(c) Config.QuestESP.Color = c end)
     end
 
+    local secMap = UI.AddSection(VisualsTab, "Left", "Map")
+    UI.AddToggleWithConfig(secMap, "Map HUD", function() return Config.Map.Enabled end, function(v)
+        Config.Map.Enabled = v
+        if not v and World.HideMapHud then
+            World.HideMapHud()
+        end
+    end, function(pop)
+        addPopupToggle(pop, "Overlay Game Map (M)", function() return Config.Map.OverlayNative end, function(v) Config.Map.OverlayNative = v end)
+        addPopupToggle(pop, "Show Self", function() return Config.Map.ShowSelf end, function(v) Config.Map.ShowSelf = v end)
+        addPopupToggle(pop, "Show NPC / Boss", function() return Config.Map.ShowAI end, function(v) Config.Map.ShowAI = v end)
+        addPopupToggle(pop, "Show Exits", function() return Config.Map.ShowExits end, function(v) Config.Map.ShowExits = v end)
+        addPopupToggle(pop, "Show Corpses", function() return Config.Map.ShowCorpses end, function(v) Config.Map.ShowCorpses = v end)
+        addPopupSlider(pop, "Map Opacity", 35, 100, 5, "%", function() return Config.Map.Opacity end, function(v) Config.Map.Opacity = v end)
+        UI._AddPopupColorPicker(pop, "Self Dot Color", function() return Config.Map.SelfColor end, function(c) Config.Map.SelfColor = c end)
+        UI._AddPopupColorPicker(pop, "Enemy Dot Color", function() return Config.Map.EnemyColor end, function(c) Config.Map.EnemyColor = c end)
+        UI._AddPopupColorPicker(pop, "Squad Dot Color", function() return Config.Map.SquadColor end, function(c) Config.Map.SquadColor = c end)
+        UI._AddPopupColorPicker(pop, "Friend Dot Color", function() return Config.Map.FriendColor end, function(c) Config.Map.FriendColor = c end)
+    end)
+    UI.AddToggle(secMap, "Show Players", function() return Config.Map.ShowPlayers end, function(v) Config.Map.ShowPlayers = v end)
+    UI.AddToggle(secMap, "Player Names", function() return Config.Map.ShowNames end, function(v) Config.Map.ShowNames = v end)
+    UI.AddToggle(secMap, "Show Distance", function() return Config.Map.ShowDistance end, function(v) Config.Map.ShowDistance = v end)
+    UI.AddToggle(secMap, "Follow Player", function() return Config.Map.FollowMe end, function(v)
+        Config.Map.FollowMe = v
+        if v and (Config.Map.Zoom or 1) < 1.2 then
+            Config.Map.Zoom = 2.0
+            UI.RefreshAll()
+        end
+    end)
+    UI.AddSlider(secMap, "Map Zoom", 1.0, 4.0, 0.2, "x", function() return Config.Map.Zoom end, function(v) Config.Map.Zoom = v end)
+    UI.AddSlider(secMap, "Map Size", 180, 420, 10, "px", function() return Config.Map.Size end, function(v) Config.Map.Size = v end)
+    UI.AddButton(secMap, "Reset Map Position", "normal", function()
+        Config.Map.PosX = -1
+        Config.Map.PosY = -1
+        if World.UpdateMapHud then
+            World.UpdateMapHud()
+        end
+    end)
+
     local secWorld = UI.AddSection(VisualsTab, "Left", "World & Vision")
     UI.AddToggle(secWorld, "Fullbright", function() return Config.World.Fullbright end, function(v) Config.World.Fullbright = v end)
     UI.AddSlider(secWorld, "Brightness", 1, 5, 0.2, "", function() return Config.World.Brightness end, function(v) Config.World.Brightness = v end)
@@ -9100,6 +9948,9 @@ do
         UI.RefreshAll()
         if Misc.RefreshReportsHud then
             Misc.RefreshReportsHud(true)
+        end
+        if World.UpdateMapHud then
+            World.UpdateMapHud()
         end
         UI.Notify("Config Reset", "All settings restored to defaults.", "info")
     end)
@@ -10468,6 +11319,9 @@ RunService:BindToRenderStep("DeltaSuiteESP", Enum.RenderPriority.Last.Value, fun
     if World.RenderRadar then
         pcall(World.RenderRadar, cam, vp)
     end
+    if World.UpdateMapHud then
+        pcall(World.UpdateMapHud, vp)
+    end
 end)
 Session.OnStop(function()
     pcall(RunService.UnbindFromRenderStep, RunService, "DeltaSuiteESP")
@@ -10481,6 +11335,9 @@ ConfigMgr._ApplyUI = function()
     if Misc.RefreshReportsHud then
         Misc.RefreshReportsHud(true)
     end
+    if World.UpdateMapHud then
+        World.UpdateMapHud()
+    end
     if type(UI.Preview.Refresh) == "function" then
         UI.Preview.Refresh()
     end
@@ -10488,4 +11345,7 @@ end
 
 UI.ApplyGlassTheme()
 ConfigMgr.TryAutoLoad()
+if World.UpdateMapHud then
+    pcall(World.UpdateMapHud)
+end
 UI.Notify("Delta Suite Loaded", "Combat, Visuals, World & Misc active for Project Delta.", "success")

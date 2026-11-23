@@ -736,8 +736,12 @@ function Delta.IsPlayerDead(player: Player?, model: Model?): boolean
         local gv = status and status:FindFirstChild("GameplayVariables")
         if gv then
             local deadState = gv:GetAttribute("DeadState")
-            if type(deadState) == "string" and deadState:lower():find("dead") then
-                return true
+            if type(deadState) == "string" then
+                local dls = deadState:lower()
+                if dls == "dead" or dls == "killed" or dls == "deceased"
+                    or (dls:find("dead") ~= nil and dls:find("not") == nil and dls:find("alive") == nil and dls:find("undead") == nil) then
+                    return true
+                end
             end
         end
     end
@@ -761,8 +765,11 @@ function Delta.IsPlayerDowned(player: Player, model: Model?): boolean
             return true
         end
         local deadState = gv:GetAttribute("DeadState")
-        if type(deadState) == "string" and deadState ~= "" and not deadState:lower():find("dead") then
-            return true
+        if type(deadState) == "string" and deadState ~= "" then
+            local dls = deadState:lower()
+            if dls:find("down") or dls:find("uncon") or dls:find("knock") or dls:find("ragdoll") then
+                return true
+            end
         end
     end
     return false
@@ -1564,7 +1571,7 @@ type ActorEntry = {
     Model: Model,
     IsAI: boolean,
     Player: Player?,
-    Draw: { [string]: any },
+    Draw: { [string]: any }?,
     Highlight: Highlight?,
 }
 
@@ -1580,7 +1587,7 @@ type TagEntry = {
     TotalValue: number,
     IsValuable: boolean,
     Highlight: Highlight?,
-    Draw: { [string]: any },
+    Draw: { [string]: any }?,
 }
 
 local Actors: { [Model]: ActorEntry } = {}
@@ -1589,9 +1596,10 @@ local WorldTags: { [Instance]: TagEntry } = {}
 -- Forward-declared ESP pool allocators assigned in Block 7
 local CreateActorDrawings: () -> { [string]: any }
 local DestroyActorVisuals: (entry: ActorEntry) -> ()
-local CreateTagDrawings: () -> { [string]: any }
+local CreateTagDrawings: (withBones: boolean?) -> { [string]: any }
 local DestroyTagVisuals: (entry: TagEntry) -> ()
 local registerWorldTag: (inst: Instance, category: "Container" | "Corpse" | "Dropped" | "Quest" | "Exit", forceLabel: string?) -> ()
+local unregisterWorldTag: (inst: Instance) -> ()
 
 Delta._RecentDeaths = {} :: { { Pos: Vector3, Name: string, ExpiresAt: number } }
 function Delta._RecordDeath(pos: Vector3?, label: string?)
@@ -1684,8 +1692,11 @@ local function isCorpseCandidate(inst: Instance): boolean
             or (inst:FindFirstChild("LeftUpperArm") ~= nil and inst:FindFirstChild("RightUpperArm") ~= nil)
             or (inst:FindFirstChild("Shirt") ~= nil and inst:FindFirstChild("HumanoidRootPart") ~= nil)
         if hasRig then
-            local inAiZones = inst.Parent and inst.Parent.Parent and inst.Parent.Parent.Name == "AiZones"
-            if not Actors[inst] and (not inAiZones or (hum ~= nil and hum.Health <= 0)) then
+            local az = Workspace:FindFirstChild("AiZones")
+            local isAiFolder = (az ~= nil and inst:IsDescendantOf(az))
+                or pName == "AiZones" or pName == "Bots" or pName == "AI" or pName == "Bosses"
+            local isPlrObj = Players:GetPlayerFromCharacter(inst) ~= nil
+            if not Actors[inst] and not isPlrObj and (not isAiFolder or (hum ~= nil and hum.Health <= 0)) then
                 return true
             end
         end
@@ -1755,11 +1766,14 @@ local function registerActor(model: Model, player: Player?, isAI: boolean)
     if (not isAI and player and Delta.IsPlayerDead(player, model)) then
         return
     end
+    if WorldTags[model] and unregisterWorldTag then
+        unregisterWorldTag(model)
+    end
     local entry: ActorEntry = {
         Model = model,
         IsAI = isAI,
         Player = player,
-        Draw = CreateActorDrawings(),
+        Draw = nil,
         Highlight = nil,
     }
     Actors[model] = entry
@@ -1904,7 +1918,7 @@ registerWorldTag = function(inst: Instance, category: "Container" | "Corpse" | "
         TotalValue = 0,
         IsValuable = false,
         Highlight = nil,
-        Draw = CreateTagDrawings(),
+        Draw = nil,
     }
 
     if resolvedCategory == "Container" or resolvedCategory == "Corpse" then
@@ -1952,7 +1966,7 @@ registerWorldTag = function(inst: Instance, category: "Container" | "Corpse" | "
     WorldTags[inst] = tag
 end
 
-local function unregisterWorldTag(inst: Instance)
+unregisterWorldTag = function(inst: Instance)
     local tag = WorldTags[inst]
     if tag then
         DestroyTagVisuals(tag)
@@ -4140,6 +4154,7 @@ local function setCornerBox(lines: { any }, outlines: { any }?, x: number, y: nu
 end
 
 local function updateBoxVisual(d: { [string]: any }, boxMode: string, x: number, y: number, w: number, h: number, color: Color3)
+    d._Cleared = false
     local px, py = math.floor(x + 0.5), math.floor(y + 0.5)
     local pw, ph = math.max(math.floor(w + 0.5), 6), math.max(math.floor(h + 0.5), 6)
     if boxMode == "2D" then
@@ -4153,16 +4168,20 @@ local function updateBoxVisual(d: { [string]: any }, boxMode: string, x: number,
                 d.BoxFill.Visible = false
             end
         end
-        d.BoxOutline.Size = Vector2.new(pw, ph)
-        d.BoxOutline.Position = Vector2.new(px, py)
-        d.BoxOutline.Visible = true
-        d.Box.Size = Vector2.new(pw, ph)
-        d.Box.Position = Vector2.new(px, py)
-        d.Box.Color = color
-        d.Box.Visible = true
+        if d.BoxOutline then
+            d.BoxOutline.Size = Vector2.new(pw, ph)
+            d.BoxOutline.Position = Vector2.new(px, py)
+            d.BoxOutline.Visible = true
+        end
+        if d.Box then
+            d.Box.Size = Vector2.new(pw, ph)
+            d.Box.Position = Vector2.new(px, py)
+            d.Box.Color = color
+            d.Box.Visible = true
+        end
         for i = 1, 8 do
             if d.CornerOutlines and d.CornerOutlines[i] then d.CornerOutlines[i].Visible = false end
-            d.Corners[i].Visible = false
+            if d.Corners and d.Corners[i] then d.Corners[i].Visible = false end
         end
     elseif boxMode == "Corner" then
         if d.BoxFill then
@@ -4175,16 +4194,18 @@ local function updateBoxVisual(d: { [string]: any }, boxMode: string, x: number,
                 d.BoxFill.Visible = false
             end
         end
-        d.BoxOutline.Visible = false
-        d.Box.Visible = false
-        setCornerBox(d.Corners, d.CornerOutlines, px, py, pw, ph, color)
+        if d.BoxOutline then d.BoxOutline.Visible = false end
+        if d.Box then d.Box.Visible = false end
+        if d.Corners then
+            setCornerBox(d.Corners, d.CornerOutlines, px, py, pw, ph, color)
+        end
     else
         if d.BoxFill then d.BoxFill.Visible = false end
-        d.BoxOutline.Visible = false
-        d.Box.Visible = false
+        if d.BoxOutline then d.BoxOutline.Visible = false end
+        if d.Box then d.Box.Visible = false end
         for i = 1, 8 do
             if d.CornerOutlines and d.CornerOutlines[i] then d.CornerOutlines[i].Visible = false end
-            d.Corners[i].Visible = false
+            if d.Corners and d.Corners[i] then d.Corners[i].Visible = false end
         end
     end
 end
@@ -4200,6 +4221,16 @@ end
 
 local function updateSkeletonVisual(d: { [string]: any }, model: Instance, cam: Camera, color: Color3, enabled: boolean)
     if enabled and model:IsA("Model") then
+        if not d.Bones then
+            local bOut, bFg = {}, {}
+            for k = 1, #BONE_PAIRS do
+                bOut[k] = newDraw("Line", { Thickness = 2.9, Color = OUTLINE_DARK, Transparency = drawTrans(0.72), ZIndex = 3, Visible = false })
+                bFg[k] = newDraw("Line", { Thickness = 1.75, Transparency = drawTrans(1.0), ZIndex = 4, Visible = false })
+            end
+            d.BoneOutlines = bOut
+            d.Bones = bFg
+        end
+        d._Cleared = false
         local skelCol = strengthenColor(color)
         local vp = cam.ViewportSize
         local maxSegLen = math.max(vp.X, vp.Y) * 0.9
@@ -4242,12 +4273,12 @@ local function updateSkeletonVisual(d: { [string]: any }, model: Instance, cam: 
                 if line then line.Visible = false end
             end
         end
-    else
+    elseif d.Bones or d.BoneOutlines then
         for i = 1, #BONE_PAIRS do
             if d.BoneOutlines and d.BoneOutlines[i] then
                 d.BoneOutlines[i].Visible = false
             end
-            if d.Bones[i] then
+            if d.Bones and d.Bones[i] then
                 d.Bones[i].Visible = false
             end
         end
@@ -4295,6 +4326,7 @@ local function updateOffscreenArrow(d: { [string]: any }, worldPos: Vector3, cam
     d.Arrow.PointB = pB
     d.Arrow.PointC = pC
     d.Arrow.Color = color
+    if d.Arrow then d._Cleared = false end
     d.Arrow.Visible = true
 end
 
@@ -4526,13 +4558,12 @@ local OUTLINE_DARK = Color3.fromRGB(8, 10, 14)
 
 CreateActorDrawings = function()
     local d: { [string]: any } = {
+        _Cleared = true,
         BoxFill = newDraw("Square", { Thickness = 1, Filled = true, Transparency = drawTrans(0.08), ZIndex = 1, Visible = false }),
         BoxOutline = newDraw("Square", { Thickness = 2.0, Filled = false, Color = OUTLINE_DARK, Transparency = drawTrans(0.65), ZIndex = 2, Visible = false }),
         CornerOutlines = createDrawLinePool(8, 2.0, OUTLINE_DARK, drawTrans(0.65), 2),
         Box = newDraw("Square", { Thickness = 1.0, Filled = false, Transparency = drawTrans(0.98), ZIndex = 3, Visible = false }),
         Corners = createDrawLinePool(8, 1.0, nil, drawTrans(0.98), 3),
-        BoneOutlines = createDrawLinePool(#BONE_PAIRS, 2.9, OUTLINE_DARK, drawTrans(0.72), 3),
-        Bones = createDrawLinePool(#BONE_PAIRS, 1.75, nil, drawTrans(1.0), 4),
         HpBg = newDraw("Square", { Thickness = 1, Filled = true, Color = OUTLINE_DARK, Transparency = drawTrans(0.75), ZIndex = 2, Visible = false }),
         HpFill = newDraw("Square", { Thickness = 1, Filled = true, Transparency = drawTrans(1.0), ZIndex = 3, Visible = false }),
         Tracer = newDraw("Line", { Thickness = 1.0, Transparency = drawTrans(0.65), ZIndex = 1, Visible = false }),
@@ -4546,8 +4577,23 @@ CreateActorDrawings = function()
     return d
 end
 
-local function hideDrawingsTable(d: { [string]: any }, hl: Highlight?, keepArrow: boolean?)
+local function hideDrawingsTable(d: { [string]: any }?, hl: Highlight?, keepArrow: boolean?)
+    if not d then
+        if hl and not keepArrow then
+            hl.Enabled = false
+        end
+        return
+    end
+    if not keepArrow and d._Cleared then
+        if hl then
+            hl.Enabled = false
+        end
+        return
+    end
     for k, v in pairs(d) do
+        if k == "_Cleared" then
+            continue
+        end
         if keepArrow and (k == "Arrow" or k == "ArrowOutline") then
             continue
         end
@@ -4559,28 +4605,34 @@ local function hideDrawingsTable(d: { [string]: any }, hl: Highlight?, keepArrow
             for _, lbl in pairs(v) do
                 if lbl then lbl.Visible = false end
             end
-        elseif v then
+        elseif type(v) ~= "boolean" and v then
             v.Visible = false
         end
     end
-    if hl and not keepArrow then
-        hl.Enabled = false
+    if not keepArrow then
+        d._Cleared = true
+        if hl then
+            hl.Enabled = false
+        end
     end
 end
 
-local function destroyVisualEntry(d: { [string]: any }, holder: { Highlight: Highlight? })
-    hideDrawingsTable(d, holder.Highlight, false)
-    for k, v in pairs(d) do
-        if k == "Corners" or k == "CornerOutlines" or k == "Bones" or k == "BoneOutlines" then
-            for _, line in ipairs(v) do
-                if line then pcall(function() line:Remove() end) end
+local function destroyVisualEntry(d: { [string]: any }?, holder: { Highlight: Highlight? })
+    if d then
+        d._Cleared = false
+        hideDrawingsTable(d, holder.Highlight, false)
+        for k, v in pairs(d) do
+            if k == "Corners" or k == "CornerOutlines" or k == "Bones" or k == "BoneOutlines" then
+                for _, line in ipairs(v) do
+                    if line then pcall(function() line:Remove() end) end
+                end
+            elseif k == "Labels" then
+                for _, lbl in pairs(v) do
+                    if lbl then pcall(function() lbl:Remove() end) end
+                end
+            elseif k ~= "_Cleared" and type(v) ~= "boolean" and v then
+                pcall(function() v:Remove() end)
             end
-        elseif k == "Labels" then
-            for _, lbl in pairs(v) do
-                if lbl then pcall(function() lbl:Remove() end) end
-            end
-        elseif v then
-            pcall(function() v:Remove() end)
         end
     end
     if holder.Highlight then
@@ -4593,15 +4645,14 @@ DestroyActorVisuals = function(entry: ActorEntry)
     destroyVisualEntry(entry.Draw, entry)
 end
 
-CreateTagDrawings = function()
+CreateTagDrawings = function(withBones: boolean?)
     local d: { [string]: any } = {
+        _Cleared = true,
         BoxFill = newDraw("Square", { Thickness = 1, Filled = true, Transparency = drawTrans(0.08), ZIndex = 1, Visible = false }),
         BoxOutline = newDraw("Square", { Thickness = 2.0, Filled = false, Color = OUTLINE_DARK, Transparency = drawTrans(0.65), ZIndex = 2, Visible = false }),
         CornerOutlines = createDrawLinePool(8, 2.0, OUTLINE_DARK, drawTrans(0.65), 2),
         Box = newDraw("Square", { Thickness = 1.0, Filled = false, Transparency = drawTrans(0.98), ZIndex = 3, Visible = false }),
         Corners = createDrawLinePool(8, 1.0, nil, drawTrans(0.98), 3),
-        BoneOutlines = createDrawLinePool(#BONE_PAIRS, 2.9, OUTLINE_DARK, drawTrans(0.72), 3),
-        Bones = createDrawLinePool(#BONE_PAIRS, 1.75, nil, drawTrans(1.0), 4),
         DotOutline = newDraw("Circle", { Filled = true, Radius = 4.0, NumSides = 14, Color = OUTLINE_DARK, Transparency = drawTrans(0.75), ZIndex = 2, Visible = false }),
         Dot = newDraw("Circle", { Filled = true, Radius = 2.5, NumSides = 14, Transparency = drawTrans(1.0), ZIndex = 3, Visible = false }),
         Tracer = newDraw("Line", { Thickness = 1.0, Transparency = drawTrans(0.65), ZIndex = 1, Visible = false }),
@@ -4609,6 +4660,10 @@ CreateTagDrawings = function()
         ArrowOutline = newDraw("Triangle", { Filled = true, Color = OUTLINE_DARK, Transparency = drawTrans(0.75), ZIndex = 2, Visible = false }),
         Arrow = newDraw("Triangle", { Filled = true, Transparency = drawTrans(1.0), ZIndex = 3, Visible = false }),
     }
+    if withBones then
+        d.BoneOutlines = createDrawLinePool(#BONE_PAIRS, 2.9, OUTLINE_DARK, drawTrans(0.72), 3)
+        d.Bones = createDrawLinePool(#BONE_PAIRS, 1.75, nil, drawTrans(1.0), 4)
+    end
     for _, key in ipairs(TAG_LABEL_KEYS) do
         d.Labels[key] = newDraw("Text", { Center = true, Outline = true, Size = 13, Font = 2, Transparency = drawTrans(1.0), ZIndex = 5, Visible = false })
     end
@@ -4639,8 +4694,9 @@ local function renderDockedLabels(
     boxH: number,
     lineStep: number
 )
+    d._Cleared = false
     for _, lbl in pairs(d.Labels) do
-        lbl.Visible = false
+        if lbl then lbl.Visible = false end
     end
     if d.HpBg then d.HpBg.Visible = false end
     if d.HpFill then d.HpFill.Visible = false end
@@ -4695,29 +4751,32 @@ local function renderDockedLabels(
             for idx, key in ipairs(textKeys) do
                 local lbl = d.Labels[key]
                 local info = values[key]
-                lbl.Text = info.Text
-                lbl.Color = info.Color
-                lbl.Size = info.Size
-                if zoneName == "Top" then
-                    lbl.Center = true
-                    local bottomOfStack = boxY - barPad - 1
-                    local rowY = math.floor(bottomOfStack - (n - idx + 1) * lineStep + 0.5)
-                    lbl.Position = Vector2.new(centerX, rowY)
-                elseif zoneName == "Bottom" then
-                    lbl.Center = true
-                    local rowY = math.floor(boxY + boxH + barPad + (idx - 1) * lineStep + 0.5)
-                    lbl.Position = Vector2.new(centerX, rowY)
-                elseif zoneName == "Left" then
-                    lbl.Center = false
-                    local rowY = sideStartY + (idx - 1) * lineStep
-                    local boundsW = (lbl.TextBounds and lbl.TextBounds.X > 0) and lbl.TextBounds.X or (#info.Text * info.Size * 0.56)
-                    lbl.Position = Vector2.new(math.floor(boxX - barPad - 4 - boundsW + 0.5), rowY)
-                elseif zoneName == "Right" then
-                    lbl.Center = false
-                    local rowY = sideStartY + (idx - 1) * lineStep
-                    lbl.Position = Vector2.new(math.floor(boxX + boxW + barPad + 4 + 0.5), rowY)
+                if lbl then
+                    lbl.Text = info.Text
+                    lbl.Color = info.Color
+                    lbl.Size = info.Size
+                    if zoneName == "Top" then
+                        lbl.Center = true
+                        local bottomOfStack = boxY - barPad - 1
+                        local rowY = math.floor(bottomOfStack - (n - idx + 1) * lineStep + 0.5)
+                        lbl.Position = Vector2.new(centerX, rowY)
+                    elseif zoneName == "Bottom" then
+                        lbl.Center = true
+                        local rowY = math.floor(boxY + boxH + barPad + (idx - 1) * lineStep + 0.5)
+                        lbl.Position = Vector2.new(centerX, rowY)
+                    elseif zoneName == "Left" then
+                        lbl.Center = false
+                        local rowY = sideStartY + (idx - 1) * lineStep
+                        local okTb, tb = pcall(function() return lbl.TextBounds end)
+                        local boundsW = (okTb and tb and tb.X > 0) and tb.X or (#info.Text * info.Size * 0.56)
+                        lbl.Position = Vector2.new(math.floor(boxX - barPad - 4 - boundsW + 0.5), rowY)
+                    elseif zoneName == "Right" then
+                        lbl.Center = false
+                        local rowY = sideStartY + (idx - 1) * lineStep
+                        lbl.Position = Vector2.new(math.floor(boxX + boxW + barPad + 4 + 0.5), rowY)
+                    end
+                    lbl.Visible = true
                 end
-                lbl.Visible = true
             end
         end
     end
@@ -4738,11 +4797,17 @@ local function renderActorESP(entry: ActorEntry, cam: Camera, vp: Vector2)
         return
     end
 
-    local isFriend = (not isAI and entry.Player ~= nil) and Delta.IsFriend(entry.Player :: Player) or false
-    local isTeam = (not isAI and entry.Player ~= nil) and Delta.IsTeammate(entry.Player :: Player) or false
-    if not isAI and not isFriend and Config.PlayerESP.TeamCheck and isTeam then
-        hideDrawingsTable(entry.Draw, entry.Highlight, false)
-        return
+    local isFriend = false
+    local isTeam = false
+    if not isAI and entry.Player ~= nil then
+        local okFr, frVal = pcall(Delta.IsFriend, entry.Player :: Player)
+        isFriend = okFr and (frVal == true) or false
+        local okTm, tmVal = pcall(Delta.IsTeammate, entry.Player :: Player)
+        isTeam = okTm and (tmVal == true) or false
+        if not isFriend and Config.PlayerESP.TeamCheck and isTeam then
+            hideDrawingsTable(entry.Draw, entry.Highlight, false)
+            return
+        end
     end
 
     if not isAI and Delta.IsPlayerDead(entry.Player, model) then
@@ -4751,7 +4816,11 @@ local function renderActorESP(entry: ActorEntry, cam: Camera, vp: Vector2)
     end
 
     local hum = model:FindFirstChildOfClass("Humanoid")
-    local root = model:FindFirstChild("HumanoidRootPart") :: BasePart? or model.PrimaryPart
+    local root = (model:FindFirstChild("HumanoidRootPart") :: BasePart?)
+        or model.PrimaryPart
+        or (model:FindFirstChild("UpperTorso") :: BasePart?)
+        or (model:FindFirstChild("Torso") :: BasePart?)
+        or (model:FindFirstChild("Head") :: BasePart?)
     if not hum or not root or hum.Health <= 0 then
         hideDrawingsTable(entry.Draw, entry.Highlight, false)
         return
@@ -4777,7 +4846,11 @@ local function renderActorESP(entry: ActorEntry, cam: Camera, vp: Vector2)
     end
 
     -- Semantic color selection
-    local isDowned = (not isAI and entry.Player ~= nil) and Delta.IsPlayerDowned(entry.Player :: Player, model) or false
+    local okDn, dnVal = false, false
+    if not isAI and entry.Player ~= nil then
+        okDn, dnVal = pcall(Delta.IsPlayerDowned, entry.Player :: Player, model)
+    end
+    local isDowned = okDn and (dnVal == true) or false
     local primaryColor: Color3
     if isAI then
         local isBoss = World._IsBossModel and World._IsBossModel(model) or false
@@ -4793,8 +4866,10 @@ local function renderActorESP(entry: ActorEntry, cam: Camera, vp: Vector2)
     -- Highlight (Chams) works even when offscreen
     updateHighlightChams(entry, model, isTeam and Config.PlayerESP.SquadColor or cfg.ChamsFill, cfg.ChamsOutline, cfg.Highlights)
 
-    -- Offscreen Arrow
-    local d = entry.Draw
+    if not entry.Draw then
+        entry.Draw = CreateActorDrawings()
+    end
+    local d = entry.Draw :: { [string]: any }
     updateOffscreenArrow(d, root.Position, cam, vp, primaryColor, cfg.Arrows)
 
     local hasBox, boxX, boxY, boxW, boxH = computeActorScreenBox(model, root, cam)
@@ -4813,7 +4888,10 @@ local function renderActorESP(entry: ActorEntry, cam: Camera, vp: Vector2)
     local detectBadge: string? = nil
     local detectColor: Color3? = nil
     if not isAI and entry.Player and Misc.GetDetectTag then
-        detectBadge, detectColor = Misc.GetDetectTag(entry.Player)
+        local okDet, db, dc = pcall(Misc.GetDetectTag, entry.Player)
+        if okDet then
+            detectBadge, detectColor = db, dc
+        end
     end
     if detectColor then
         primaryColor = detectColor
@@ -4839,8 +4917,8 @@ local function renderActorESP(entry: ActorEntry, cam: Camera, vp: Vector2)
         values.Distance = { Text = string.format("%.0fm", dist), Color = Color3.fromRGB(226, 232, 240), Size = math.max(fontSize - 1, 10) }
     end
     if cfg.Weapon then
-        local wepName = Delta.GetHeldWeaponName(entry.Player, model)
-        if wepName then
+        local okWep, wepName = pcall(Delta.GetHeldWeaponName, entry.Player, model)
+        if okWep and wepName then
             values.Weapon = { Text = wepName, Color = Color3.fromRGB(203, 213, 225), Size = math.max(fontSize - 1, 10) }
         end
     end
@@ -4849,31 +4927,33 @@ local function renderActorESP(entry: ActorEntry, cam: Camera, vp: Vector2)
             values.Downed = { Text = "[DOWNED]", Color = Config.PlayerESP.DownedColor, Size = math.max(fontSize - 1, 10) }
         end
         if Config.PlayerESP.KDR or Config.PlayerESP.Reports then
-            local kdrStr, repCount, isBeingBanned = Delta.GetPlayerMeta(entry.Player)
-            if Config.PlayerESP.KDR then
-                values.KDR = { Text = "KDR: " .. (kdrStr or "N/A"), Color = Color3.fromRGB(168, 180, 198), Size = math.max(fontSize - 1, 11) }
-            end
-            if Config.PlayerESP.Reports then
-                local r = repCount or 0
-                local repText: string
-                local repColor: Color3
-                if isBeingBanned then
-                    repText = string.format("[BANNING] REP: %d", r)
-                    repColor = Color3.fromRGB(255, 64, 64)
-                elseif r >= 15 then
-                    repText = string.format("[!] REP: %d", r)
-                    repColor = Color3.fromRGB(248, 72, 72)
-                elseif r >= 5 then
-                    repText = string.format("[!] Rep: %d", r)
-                    repColor = Color3.fromRGB(251, 146, 60)
-                elseif r >= 1 then
-                    repText = string.format("Rep: %d", r)
-                    repColor = Color3.fromRGB(250, 204, 21)
-                else
-                    repText = "Rep: 0"
-                    repColor = Color3.fromRGB(182, 194, 210)
+            local okMeta, kdrStr, repCount, isBeingBanned = pcall(Delta.GetPlayerMeta, entry.Player)
+            if okMeta then
+                if Config.PlayerESP.KDR then
+                    values.KDR = { Text = "KDR: " .. (kdrStr or "N/A"), Color = Color3.fromRGB(168, 180, 198), Size = math.max(fontSize - 1, 11) }
                 end
-                values.Reports = { Text = repText, Color = repColor, Size = math.max(fontSize, 12) }
+                if Config.PlayerESP.Reports then
+                    local r = repCount or 0
+                    local repText: string
+                    local repColor: Color3
+                    if isBeingBanned then
+                        repText = string.format("[BANNING] REP: %d", r)
+                        repColor = Color3.fromRGB(255, 64, 64)
+                    elseif r >= 15 then
+                        repText = string.format("[!] REP: %d", r)
+                        repColor = Color3.fromRGB(248, 72, 72)
+                    elseif r >= 5 then
+                        repText = string.format("[!] Rep: %d", r)
+                        repColor = Color3.fromRGB(251, 146, 60)
+                    elseif r >= 1 then
+                        repText = string.format("Rep: %d", r)
+                        repColor = Color3.fromRGB(250, 204, 21)
+                    else
+                        repText = "Rep: 0"
+                        repColor = Color3.fromRGB(182, 194, 210)
+                    end
+                    values.Reports = { Text = repText, Color = repColor, Size = math.max(fontSize, 12) }
+                end
             end
         end
     end
@@ -4881,13 +4961,15 @@ local function renderActorESP(entry: ActorEntry, cam: Camera, vp: Vector2)
     local layout = cfg.Layout or createDefaultActorLayout(isAI)
     renderDockedLabels(d, values, layout, cfg.HealthBar == true, hpRatio, boxX, boxY, boxW, boxH, lineStep)
 
-    if cfg.Tracers then
-        d.Tracer.From = Vector2.new(vp.X * 0.5, vp.Y)
-        d.Tracer.To = Vector2.new(boxX + boxW * 0.5, boxY + boxH)
-        d.Tracer.Color = primaryColor
-        d.Tracer.Visible = true
-    else
-        d.Tracer.Visible = false
+    if d.Tracer then
+        if cfg.Tracers then
+            d.Tracer.From = Vector2.new(vp.X * 0.5, vp.Y)
+            d.Tracer.To = Vector2.new(boxX + boxW * 0.5, boxY + boxH)
+            d.Tracer.Color = primaryColor
+            d.Tracer.Visible = true
+        else
+            d.Tracer.Visible = false
+        end
     end
 
     local skelColor = (not isAI and isTeam) and Config.PlayerESP.SquadColor or (cfg.SkeletonColor or primaryColor)
@@ -4969,7 +5051,10 @@ local function renderTagESP(tag: TagEntry, cam: Camera, vp: Vector2)
         updateHighlightChams(tag, tag.Instance, color, cfg.ChamsOutline or Color3.new(1, 1, 1), cfg.Chams == true)
     end
 
-    local d = tag.Draw
+    if not tag.Draw then
+        tag.Draw = CreateTagDrawings(tag.Category == "Corpse" and cfg.Skeleton == true)
+    end
+    local d = tag.Draw :: { [string]: any }
     updateOffscreenArrow(d, tag.Root.Position, cam, vp, color, cfg.Arrows == true)
 
     local sp, onScreen = cam:WorldToViewportPoint(tag.Root.Position + Vector3.new(0, 0.35, 0))
@@ -4997,13 +5082,16 @@ local function renderTagESP(tag: TagEntry, cam: Camera, vp: Vector2)
 
     local showDot = (tag.Category == "Exit") or (boxMode == "Off") or (not hasBox)
     local dotPos = Vector2.new(math.floor(sp.X + 0.5), math.floor(sp.Y + 0.5))
+    d._Cleared = false
     if d.DotOutline then
         d.DotOutline.Position = dotPos
         d.DotOutline.Visible = showDot
     end
-    d.Dot.Position = dotPos
-    d.Dot.Color = color
-    d.Dot.Visible = showDot
+    if d.Dot then
+        d.Dot.Position = dotPos
+        d.Dot.Color = color
+        d.Dot.Visible = showDot
+    end
 
     local fs = Config.Settings.FontSize
     local lineStep = fs + 1
@@ -5025,13 +5113,15 @@ local function renderTagESP(tag: TagEntry, cam: Camera, vp: Vector2)
             d.Labels.Value.Position = Vector2.new(math.floor(sp.X + 0.5), math.floor(by + bh + 3 + lineStep + 0.5))
             d.Labels.Value.Visible = true
         end
-        if Config.ExitESP.Tracers then
-            d.Tracer.From = Vector2.new(vp.X * 0.5, vp.Y)
-            d.Tracer.To = dotPos
-            d.Tracer.Color = color
-            d.Tracer.Visible = true
-        else
-            d.Tracer.Visible = false
+        if d.Tracer then
+            if Config.ExitESP.Tracers then
+                d.Tracer.From = Vector2.new(vp.X * 0.5, vp.Y)
+                d.Tracer.To = dotPos
+                d.Tracer.Color = color
+                d.Tracer.Visible = true
+            else
+                d.Tracer.Visible = false
+            end
         end
         updateSkeletonVisual(d, tag.Instance, cam, color, false)
         return
@@ -5065,13 +5155,15 @@ local function renderTagESP(tag: TagEntry, cam: Camera, vp: Vector2)
     local layout = cfg.Layout or createDefaultTagLayout(catKey)
     renderDockedLabels(d, values, layout, false, 1, bx, by, bw, bh, lineStep)
 
-    if cfg.Tracers then
-        d.Tracer.From = Vector2.new(vp.X * 0.5, vp.Y)
-        d.Tracer.To = hasBox and Vector2.new(bx + bw * 0.5, by + bh) or dotPos
-        d.Tracer.Color = color
-        d.Tracer.Visible = true
-    else
-        d.Tracer.Visible = false
+    if d.Tracer then
+        if cfg.Tracers then
+            d.Tracer.From = Vector2.new(vp.X * 0.5, vp.Y)
+            d.Tracer.To = hasBox and Vector2.new(bx + bw * 0.5, by + bh) or dotPos
+            d.Tracer.Color = color
+            d.Tracer.Visible = true
+        else
+            d.Tracer.Visible = false
+        end
     end
 
     if tag.Category == "Corpse" then
@@ -5297,9 +5389,12 @@ local function bindPlayerTracking(player: Player)
         task.defer(registerActor, player.Character, player, false)
     end
     Session.Bind(player.CharacterAdded, function(char)
-        task.wait(0.15)
-        if char and char.Parent then
-            registerActor(char, player, false)
+        for _, waitSec in ipairs({ 0.12, 0.5, 1.25 }) do
+            task.delay(waitSec, function()
+                if Session.IsAlive() and player.Parent and char and char.Parent and not Actors[char] then
+                    registerActor(char, player, false)
+                end
+            end)
         end
     end)
     Session.Bind(player.CharacterRemoving, function(char)
@@ -5643,20 +5738,51 @@ function World._ReconcileEntities()
             end
         end
     end
+    local function reconcileAiContainer(container: Instance)
+        for _, child in ipairs(container:GetChildren()) do
+            if child:IsA("Model") and child.Parent and not Actors[child] then
+                local npcHum = child:FindFirstChildOfClass("Humanoid")
+                if npcHum then
+                    if npcHum.Health <= 0 then
+                        registerWorldTag(child, "Corpse")
+                    else
+                        registerActor(child, nil, true)
+                    end
+                elseif isCorpseCandidate(child) then
+                    registerWorldTag(child, "Corpse")
+                end
+            elseif child:IsA("Folder") then
+                bindAiZone(child)
+                for _, sub in ipairs(child:GetChildren()) do
+                    if sub:IsA("Model") and sub.Parent and not Actors[sub] then
+                        local subHum = sub:FindFirstChildOfClass("Humanoid")
+                        if subHum then
+                            if subHum.Health <= 0 then
+                                registerWorldTag(sub, "Corpse")
+                            else
+                                registerActor(sub, nil, true)
+                            end
+                        elseif isCorpseCandidate(sub) then
+                            registerWorldTag(sub, "Corpse")
+                        end
+                    end
+                end
+            end
+        end
+    end
+
     local az = Workspace:FindFirstChild("AiZones")
     if az then
         attachAiZonesFolder(az)
         for _, zone in ipairs(az:GetChildren()) do
             bindAiZone(zone)
-            for _, npc in ipairs(zone:GetChildren()) do
-                if npc:IsA("Model") and npc.Parent and not Actors[npc] then
-                    if isCorpseCandidate(npc) then
-                        registerWorldTag(npc, "Corpse")
-                    else
-                        registerActor(npc, nil, true)
-                    end
-                end
-            end
+            reconcileAiContainer(zone)
+        end
+    end
+    for _, botFolderName in ipairs({ "Bots", "AI", "Bosses" }) do
+        local bf = Workspace:FindFirstChild(botFolderName)
+        if bf then
+            reconcileAiContainer(bf)
         end
     end
     local noCol = Workspace:FindFirstChild("NoCollision")

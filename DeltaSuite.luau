@@ -1605,7 +1605,7 @@ function Delta._RecordDeath(pos: Vector3?, label: string?)
             table.remove(list, i)
         end
     end
-    table.insert(list, { Pos = pos, Name = label or "Corpse", ExpiresAt = now + 8.0 })
+    table.insert(list, { Pos = pos, Name = label or "Corpse", ExpiresAt = now + 20.0 })
 end
 
 function Delta._MatchDeathSpot(pos: Vector3?): string?
@@ -1618,15 +1618,41 @@ function Delta._MatchDeathSpot(pos: Vector3?): string?
         local rec = list[i]
         if rec.ExpiresAt < now then
             table.remove(list, i)
-        elseif (rec.Pos - pos).Magnitude <= 18 then
+        elseif (rec.Pos - pos).Magnitude <= 28 then
             return rec.Name
         end
     end
     return nil
 end
 
+local function isLivePlayerCharacterModel(inst: Instance): boolean
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p.Character == inst then
+            return not Delta.IsPlayerDead(p, inst)
+        end
+    end
+    return false
+end
+
+local function hasCorpseItemProperties(inst: Instance): boolean
+    local ip = inst:FindFirstChild("ItemProperties")
+    if not ip then
+        return false
+    end
+    local it = tostring(ip:GetAttribute("ItemType") or ""):lower()
+    local dn = tostring(ip:GetAttribute("CallSign") or ip:GetAttribute("ItemName") or ip:GetAttribute("DisplayName") or ""):lower()
+    return it:find("corpse") ~= nil or it:find("body") ~= nil or it:find("dead") ~= nil
+        or dn:find("corpse") ~= nil or dn:find("dead body") ~= nil or dn:find("cadaver") ~= nil
+end
+
 local function isCorpseCandidate(inst: Instance): boolean
     if not inst or not inst.Parent then
+        return false
+    end
+    if LocalPlayer and inst == LocalPlayer.Character and not Delta.IsPlayerDead(LocalPlayer, inst) then
+        return false
+    end
+    if isLivePlayerCharacterModel(inst) then
         return false
     end
     local pName = inst.Parent.Name
@@ -1638,6 +1664,9 @@ local function isCorpseCandidate(inst: Instance): boolean
         return true
     end
     if inst:GetAttribute("IsCorpse") == true or inst:GetAttribute("Corpse") == true or inst:GetAttribute("Dead") == true or inst:GetAttribute("IsDead") == true then
+        return true
+    end
+    if hasCorpseItemProperties(inst) then
         return true
     end
     local hum = inst:FindFirstChildOfClass("Humanoid")
@@ -1655,17 +1684,8 @@ local function isCorpseCandidate(inst: Instance): boolean
             or (inst:FindFirstChild("LeftUpperArm") ~= nil and inst:FindFirstChild("RightUpperArm") ~= nil)
             or (inst:FindFirstChild("Shirt") ~= nil and inst:FindFirstChild("HumanoidRootPart") ~= nil)
         if hasRig then
-            local isLivePlr = false
-            for _, p in ipairs(Players:GetPlayers()) do
-                if p.Character == inst then
-                    local ph = inst:FindFirstChildOfClass("Humanoid")
-                    if ph and ph.Health > 0 then
-                        isLivePlr = true
-                    end
-                    break
-                end
-            end
-            if not isLivePlr and not Actors[inst] then
+            local inAiZones = inst.Parent and inst.Parent.Parent and inst.Parent.Parent.Name == "AiZones"
+            if not Actors[inst] and (not inAiZones or (hum ~= nil and hum.Health <= 0)) then
                 return true
             end
         end
@@ -1753,7 +1773,8 @@ local function registerActor(model: Model, player: Player?, isAI: boolean)
         if World._MarkBossDirty then
             World._MarkBossDirty()
         end
-        task.delay(0.2, function()
+
+        local function tryTagCorpse()
             if not Session.IsAlive() then
                 return
             end
@@ -1768,7 +1789,9 @@ local function registerActor(model: Model, player: Player?, isAI: boolean)
                     registerWorldTag(rag.Value, "Corpse", dispName)
                 end
             end
-        end)
+        end
+        task.delay(0.25, tryTagCorpse)
+        task.delay(1.0, tryTagCorpse)
     end)
 end
 
@@ -1839,9 +1862,9 @@ registerWorldTag = function(inst: Instance, category: "Container" | "Corpse" | "
     local resolvedCategory = category
     if category == "Dropped" then
         local ln = inst.Name:lower()
-        local hasInvLoot = (inst:FindFirstChild("Inventory") ~= nil or inst:FindFirstChild("Loot") ~= nil) and not ln:find("crate") and not ln:find("box")
+        local hasInvLoot = (inst:FindFirstChild("Inventory") ~= nil or inst:FindFirstChild("Loot") ~= nil) and not ln:find("crate") and not ln:find("box") and not ln:find("chest")
         local nearDeathName = Delta._MatchDeathSpot(root.Position)
-        local isSingleDrop = inst:FindFirstChild("ItemProperties") ~= nil
+        local isSingleDrop = inst:FindFirstChild("ItemProperties") ~= nil and not hasCorpseItemProperties(inst) and not hasInvLoot
         if isCorpseCandidate(inst) or hasInvLoot or (nearDeathName ~= nil and inst:IsA("Model") and not isSingleDrop) then
             resolvedCategory = "Corpse"
             if not forceLabel and nearDeathName then
@@ -1910,7 +1933,7 @@ registerWorldTag = function(inst: Instance, category: "Container" | "Corpse" | "
         tag.ItemCount = 1
         tag.IsValuable = price >= Config.DroppedESP.MinPrice
         if resolvedCategory == "Dropped" then
-            Session.Bind(inst.ChildAdded, function(ch)
+            Session.Bind(inst.DescendantAdded, function(ch)
                 if ch.Name == "Inventory" or ch.Name == "Loot" or ch:IsA("Humanoid") or ch:IsA("ProximityPrompt") or ch.Name == "Head" or ch.Name == "UpperTorso" then
                     task.wait(0.05)
                     if inst.Parent and isCorpseCandidate(inst) then
@@ -5295,6 +5318,60 @@ Session.Bind(Players.PlayerRemoving, function(p)
     end
 end)
 
+-- LocalPlayer death / respawn & camera swap recovery: keeps ESP, UI, and world folders alive across StreamingEnabled reloads
+local function scheduleLocalRespawnRecovery()
+    if not Session.IsAlive() then
+        return
+    end
+    if Misc._EnsureUiParent then
+        pcall(Misc._EnsureUiParent)
+    end
+    for _, delaySec in ipairs({ 0.25, 0.85, 1.8, 3.2 }) do
+        task.delay(delaySec, function()
+            if not Session.IsAlive() then
+                return
+            end
+            if World._RescanStartup then
+                pcall(World._RescanStartup)
+            end
+            if Combat.ApplyWeaponMods then
+                pcall(Combat.ApplyWeaponMods)
+            end
+            if World.Step then
+                local panicVis = Config.Misc.PanicMode and Config.Misc.PanicHideVisuals
+                pcall(World.Step, panicVis)
+            end
+        end)
+    end
+end
+
+if LocalPlayer then
+    Session.Bind(LocalPlayer.CharacterRemoving, function()
+        Combat._StickyAimModel = nil
+        ActiveLockedTarget = nil
+        scheduleLocalRespawnRecovery()
+    end)
+    Session.Bind(LocalPlayer.CharacterAdded, function(char)
+        if char then
+            local hum = char:FindFirstChildOfClass("Humanoid") or char:WaitForChild("Humanoid", 3)
+            if hum and hum:IsA("Humanoid") then
+                Session.Bind(hum.Died, function()
+                    Combat._StickyAimModel = nil
+                    ActiveLockedTarget = nil
+                end)
+            end
+        end
+        scheduleLocalRespawnRecovery()
+    end)
+end
+Session.Bind(Workspace:GetPropertyChangedSignal("CurrentCamera"), function()
+    task.defer(function()
+        if Session.IsAlive() and World._ReconcileEntities then
+            pcall(World._ReconcileEntities)
+        end
+    end)
+end)
+
 local BoundFolders: { [Instance]: boolean } = {}
 
 local function bindAiZone(zone: Instance)
@@ -5394,15 +5471,6 @@ local function bindFolderTags(folder: Instance?, cat: "Container" | "Corpse" | "
     end)
 end
 
-local function isPlayerCharacterModel(inst: Instance): boolean
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p.Character == inst then
-            return true
-        end
-    end
-    return false
-end
-
 local function hookWorkspaceFolder(child: Instance)
     if child.Name == "AiZones" then
         attachAiZonesFolder(child)
@@ -5435,7 +5503,7 @@ local function hookWorkspaceFolder(child: Instance)
                 bindFolderTags(sub, "Quest")
             end
         end)
-    elseif child:IsA("Model") and not isPlayerCharacterModel(child) and isCorpseCandidate(child) then
+    elseif child:IsA("Model") and not isLivePlayerCharacterModel(child) and isCorpseCandidate(child) then
         registerWorldTag(child, "Corpse")
     end
 end
@@ -5447,10 +5515,11 @@ Session.Bind(Workspace.ChildAdded, function(child)
     hookWorkspaceFolder(child)
     if child:IsA("Model") then
         task.delay(0.15, function()
-            if Session.IsAlive() and child.Parent and not isPlayerCharacterModel(child) and child:FindFirstChild("ItemProperties") == nil then
+            if Session.IsAlive() and child.Parent and not isLivePlayerCharacterModel(child) then
                 local cr = resolveModelRoot(child)
                 local deathName = cr and Delta._MatchDeathSpot(cr.Position) or nil
-                if isCorpseCandidate(child) or deathName ~= nil then
+                local singleItem = (child:FindFirstChild("ItemProperties") ~= nil) and not hasCorpseItemProperties(child) and not child:FindFirstChild("Inventory") and not child:FindFirstChild("Loot")
+                if isCorpseCandidate(child) or (deathName ~= nil and not singleItem) then
                     registerWorldTag(child, "Corpse", deathName)
                 end
             end
@@ -5481,7 +5550,11 @@ Session.Bind(Workspace.DescendantAdded, function(desc)
             if not Session.IsAlive() or not desc.Parent or not desc:IsDescendantOf(Workspace) then
                 return
             end
-            if Actors[desc] or isPlayerCharacterModel(desc) or desc:FindFirstChild("ItemProperties") ~= nil then
+            if Actors[desc] or isLivePlayerCharacterModel(desc) then
+                return
+            end
+            local singleItem = (desc:FindFirstChild("ItemProperties") ~= nil) and not hasCorpseItemProperties(desc) and not desc:FindFirstChild("Inventory") and not desc:FindFirstChild("Loot")
+            if singleItem then
                 return
             end
             local cr = resolveModelRoot(desc)
@@ -5493,7 +5566,7 @@ Session.Bind(Workspace.DescendantAdded, function(desc)
     elseif (desc.Name == "Inventory" or desc.Name == "Loot" or desc:IsA("ProximityPrompt")) and desc.Parent and desc.Parent:IsA("Model") then
         local mdl = desc.Parent
         task.delay(0.1, function()
-            if Session.IsAlive() and mdl.Parent and mdl:IsDescendantOf(Workspace) and not isPlayerCharacterModel(mdl) then
+            if Session.IsAlive() and mdl.Parent and mdl:IsDescendantOf(Workspace) and not isLivePlayerCharacterModel(mdl) then
                 if isCorpseCandidate(mdl) then
                     registerWorldTag(mdl, "Corpse")
                 end
@@ -5504,15 +5577,27 @@ end)
 
 function World._ReconcileCorpses()
     for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= LocalPlayer then
-            local rsPlayer = Delta.GetRSPlayer(plr)
-            local status = rsPlayer and rsPlayer:FindFirstChild("Status")
-            local gv = status and status:FindFirstChild("GameplayVariables")
-            local rag = gv and gv:FindFirstChild("ActiveRagdoll")
-            if rag and rag:IsA("ObjectValue") and rag.Value and rag.Value:IsDescendantOf(Workspace) then
-                if Delta.IsPlayerDead(plr, plr.Character) then
-                    registerWorldTag(rag.Value, "Corpse", plr.DisplayName)
-                end
+        local rsPlayer = Delta.GetRSPlayer(plr)
+        local status = rsPlayer and rsPlayer:FindFirstChild("Status")
+        local gv = status and status:FindFirstChild("GameplayVariables")
+        local rag = gv and gv:FindFirstChild("ActiveRagdoll")
+        if rag and rag:IsA("ObjectValue") and rag.Value and rag.Value:IsDescendantOf(Workspace) then
+            if Delta.IsPlayerDead(plr, plr.Character) then
+                registerWorldTag(rag.Value, "Corpse", plr.DisplayName)
+            end
+        end
+        if plr ~= LocalPlayer and plr.Character and plr.Character:IsDescendantOf(Workspace) then
+            if not Actors[plr.Character] and Delta.IsPlayerDead(plr, plr.Character) and isCorpseCandidate(plr.Character) then
+                registerWorldTag(plr.Character, "Corpse", plr.DisplayName)
+            end
+        end
+    end
+    for inst, tag in pairs(WorldTags) do
+        if tag.Category == "Dropped" and inst.Parent and inst:IsDescendantOf(Workspace) then
+            local nearName = tag.Root and tag.Root.Parent and Delta._MatchDeathSpot(tag.Root.Position) or nil
+            local singleItem = (inst:FindFirstChild("ItemProperties") ~= nil) and not hasCorpseItemProperties(inst) and not inst:FindFirstChild("Inventory") and not inst:FindFirstChild("Loot")
+            if isCorpseCandidate(inst) or (nearName ~= nil and inst:IsA("Model") and not singleItem) then
+                registerWorldTag(inst, "Corpse", nearName)
             end
         end
     end
@@ -5520,7 +5605,7 @@ function World._ReconcileCorpses()
         local f = Workspace:FindFirstChild(fName)
         if f then
             for _, ch in ipairs(f:GetChildren()) do
-                if isCorpseCandidate(ch) then
+                if not Actors[ch] and not isLivePlayerCharacterModel(ch) and isCorpseCandidate(ch) then
                     registerWorldTag(ch, "Corpse")
                 end
             end
@@ -5537,33 +5622,117 @@ function World._ReconcileCorpses()
         end
     end
     for _, ch in ipairs(Workspace:GetChildren()) do
-        if ch:IsA("Model") and not Actors[ch] and not isPlayerCharacterModel(ch) and isCorpseCandidate(ch) then
+        if ch:IsA("Model") and not Actors[ch] and not isLivePlayerCharacterModel(ch) and isCorpseCandidate(ch) then
             registerWorldTag(ch, "Corpse")
         end
     end
 end
 
-function World._RescanStartup()
-    for _, p in ipairs(Players:GetPlayers()) do
-        bindPlayerTracking(p)
-        if p ~= LocalPlayer and p.Character and p.Character.Parent and not Actors[p.Character] then
-            registerActor(p.Character, p, false)
+function World._ReconcileEntities()
+    for f in pairs(BoundFolders) do
+        if not f.Parent or not f:IsDescendantOf(Workspace) then
+            BoundFolders[f] = nil
         end
     end
-    for _, wsChild in ipairs(Workspace:GetChildren()) do
-        hookWorkspaceFolder(wsChild)
-        if wsChild.Name == "AiZones" then
-            for _, zone in ipairs(wsChild:GetChildren()) do
-                for _, npc in ipairs(zone:GetChildren()) do
-                    if npc:IsA("Model") and not Actors[npc] then
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then
+            bindPlayerTracking(p)
+            local ch = p.Character
+            if ch and ch.Parent and ch:IsDescendantOf(Workspace) and not Actors[ch] and not Delta.IsPlayerDead(p, ch) then
+                registerActor(ch, p, false)
+            end
+        end
+    end
+    local az = Workspace:FindFirstChild("AiZones")
+    if az then
+        attachAiZonesFolder(az)
+        for _, zone in ipairs(az:GetChildren()) do
+            bindAiZone(zone)
+            for _, npc in ipairs(zone:GetChildren()) do
+                if npc:IsA("Model") and npc.Parent and not Actors[npc] then
+                    if isCorpseCandidate(npc) then
+                        registerWorldTag(npc, "Corpse")
+                    else
                         registerActor(npc, nil, true)
                     end
                 end
             end
         end
     end
+    local noCol = Workspace:FindFirstChild("NoCollision")
+    if noCol then
+        local exits = noCol:FindFirstChild("ExitLocations")
+        if exits then
+            bindFolderTags(exits, "Exit")
+            for _, ex in ipairs(exits:GetChildren()) do
+                if not WorldTags[ex] then
+                    registerWorldTag(ex, "Exit")
+                end
+            end
+        end
+        local qf = noCol:FindFirstChild("QuestItems")
+        if qf then
+            bindFolderTags(qf, "Quest")
+            for _, q in ipairs(qf:GetChildren()) do
+                if not WorldTags[q] then
+                    registerWorldTag(q, "Quest")
+                end
+            end
+        end
+    end
+    local contFolder = Workspace:FindFirstChild("Containers")
+    if contFolder then
+        bindFolderTags(contFolder, "Container")
+        for _, c in ipairs(contFolder:GetChildren()) do
+            if not WorldTags[c] then
+                registerWorldTag(c, "Container")
+            end
+        end
+    end
+    local dropFolder = Workspace:FindFirstChild("DroppedItems")
+    if dropFolder then
+        bindFolderTags(dropFolder, "Dropped")
+        for _, d in ipairs(dropFolder:GetChildren()) do
+            if not WorldTags[d] then
+                registerWorldTag(d, "Dropped")
+            end
+        end
+    end
+    local questFolder = Workspace:FindFirstChild("QuestItems") or Workspace:FindFirstChild("Quests")
+    if questFolder then
+        bindFolderTags(questFolder, "Quest")
+        for _, q in ipairs(questFolder:GetChildren()) do
+            if not WorldTags[q] then
+                registerWorldTag(q, "Quest")
+            end
+        end
+    end
+    for _, cName in ipairs({ "Corpses", "Bodies", "Ragdolls", "Dead", "DeadBodies", "PlayerCorpses", "Deaths" }) do
+        local cf = Workspace:FindFirstChild(cName)
+        if cf then
+            bindFolderTags(cf, "Corpse")
+            for _, c in ipairs(cf:GetChildren()) do
+                if not WorldTags[c] then
+                    registerWorldTag(c, "Corpse")
+                end
+            end
+        end
+    end
+end
+
+function World._RescanStartup()
+    if Misc._EnsureUiParent then
+        pcall(Misc._EnsureUiParent)
+    end
+    for _, wsChild in ipairs(Workspace:GetChildren()) do
+        hookWorkspaceFolder(wsChild)
+    end
+    World._ReconcileEntities()
     if World._ReconcileCorpses then
         pcall(World._ReconcileCorpses)
+    end
+    if World._MarkBossDirty then
+        World._MarkBossDirty()
     end
     if Misc.InitListeners then
         pcall(Misc.InitListeners)
@@ -6837,6 +7006,11 @@ ScreenGui.DisplayOrder = 120
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.Parent = getUiParent()
 Session.Track(ScreenGui)
+Misc._EnsureUiParent = function()
+    if Session.IsAlive() and (not ScreenGui.Parent or not ScreenGui:IsDescendantOf(game)) then
+        ScreenGui.Parent = getUiParent()
+    end
+end
 
 -- Floating Dropdown Popover Layer (prevents clipping inside scroll frames)
 local PopupLayer = Instance.new("Frame")
@@ -12507,17 +12681,17 @@ Session.Bind(RunService.RenderStepped, function(dt: number)
     end
 
     -- Misc subsystem (Panic Sync, Pass Door, Fast Trade, Screen Effects)
-    Misc.Step()
+    pcall(Misc.Step)
 
     -- Combat loops
-    stepAimbot(dt)
-    stepTriggerBot()
+    pcall(stepAimbot, dt)
+    pcall(stepTriggerBot)
 
     local panicHideVis = Config.Misc.PanicMode and Config.Misc.PanicHideVisuals
     local panicDisableCombat = Config.Misc.PanicMode and Config.Misc.PanicDisableCombat
 
     -- World & FOV
-    World.Step(panicHideVis)
+    pcall(World.Step, panicHideVis)
 
     if panicHideVis then
         Misc._HideAllVisualsNow()
@@ -12655,7 +12829,7 @@ RunService:BindToRenderStep("DeltaSuiteESP", Enum.RenderPriority.Last.Value, fun
         return
     end
     if Config.Misc.PanicMode and Config.Misc.PanicHideVisuals then
-        Misc._HideAllVisualsNow()
+        pcall(Misc._HideAllVisualsNow)
         return
     end
     local cam = Workspace.CurrentCamera
@@ -12665,6 +12839,12 @@ RunService:BindToRenderStep("DeltaSuiteESP", Enum.RenderPriority.Last.Value, fun
     local vp = cam.ViewportSize
     if vp.X <= 1 or vp.Y <= 1 then
         return
+    end
+
+    local nowEsp = os.clock()
+    if World._ReconcileEntities and (World._LastEntityTick or 0) + 1.15 <= nowEsp then
+        World._LastEntityTick = nowEsp
+        pcall(World._ReconcileEntities)
     end
 
     local staleActors: { Model } = {}
@@ -12696,36 +12876,45 @@ RunService:BindToRenderStep("DeltaSuiteESP", Enum.RenderPriority.Last.Value, fun
         end
     end
     for _, m in ipairs(staleActors) do
-        local deadEntry = Actors[m]
-        local dRoot = resolveModelRoot(m)
-        local deadLabel: string? = nil
-        if deadEntry then
-            deadLabel = (deadEntry.Player and deadEntry.Player.DisplayName) or m.Name
-            Delta._RecordDeath(dRoot and dRoot.Position, deadLabel)
-        end
-        unregisterActor(m)
-        if m.Parent and m:IsDescendantOf(Workspace) and isCorpseCandidate(m) then
-            local dup = false
-            if dRoot then
-                for existingInst, existingTag in pairs(WorldTags) do
-                    if existingTag.Category == "Corpse" and existingInst ~= m and existingTag.Root and existingTag.Root.Parent then
-                        if (existingTag.Root.Position - dRoot.Position).Magnitude <= 4.5 then
-                            dup = true
-                            break
+        pcall(function()
+            local deadEntry = Actors[m]
+            local inWs = m.Parent ~= nil and m:IsDescendantOf(Workspace)
+            local dRoot = resolveModelRoot(m)
+            local dHum = m:FindFirstChildOfClass("Humanoid")
+            local reallyDied = inWs
+                or (deadEntry ~= nil and not deadEntry.IsAI and deadEntry.Player ~= nil and deadEntry.Player.Parent ~= nil and deadEntry.Player.Character ~= m)
+                or (dHum ~= nil and dHum.Health <= 0)
+            local deadLabel: string? = nil
+            if deadEntry then
+                deadLabel = (deadEntry.Player and deadEntry.Player.DisplayName) or m.Name
+                if reallyDied then
+                    Delta._RecordDeath(dRoot and dRoot.Position, deadLabel)
+                end
+            end
+            unregisterActor(m)
+            if inWs and isCorpseCandidate(m) then
+                local dup = false
+                if dRoot then
+                    local wantTagLabel = "Corpse · " .. (deadLabel or "")
+                    for existingInst, existingTag in pairs(WorldTags) do
+                        if existingTag.Category == "Corpse" and existingInst ~= m and existingTag.Root and existingTag.Root.Parent then
+                            if (existingTag.Root.Position - dRoot.Position).Magnitude <= 3.0 and (not deadLabel or existingTag.CachedLabel == wantTagLabel) then
+                                dup = true
+                                break
+                            end
                         end
                     end
                 end
+                if not dup then
+                    registerWorldTag(m, "Corpse", deadLabel)
+                end
             end
-            if not dup then
-                registerWorldTag(m, "Corpse", deadLabel)
-            end
-        end
+        end)
     end
 
     if Config.CorpseESP.Enabled and World._ReconcileCorpses then
-        local nowCorpseTick = os.clock()
-        if (World._LastCorpseTick or 0) + 1.0 <= nowCorpseTick then
-            World._LastCorpseTick = nowCorpseTick
+        if (World._LastCorpseTick or 0) + 0.85 <= nowEsp then
+            World._LastCorpseTick = nowEsp
             pcall(World._ReconcileCorpses)
         end
     end
@@ -12737,10 +12926,12 @@ RunService:BindToRenderStep("DeltaSuiteESP", Enum.RenderPriority.Last.Value, fun
             table.insert(staleTags, inst)
         else
             if tag.Category == "Corpse" or tag.Category == "Container" then
-                local inv = findTagInventoryFolder(inst)
-                if inv and #inv:GetChildren() ~= tag.ItemCount then
-                    refreshContainerTag(tag)
-                end
+                pcall(function()
+                    local inv = findTagInventoryFolder(inst)
+                    if inv and #inv:GetChildren() ~= tag.ItemCount then
+                        refreshContainerTag(tag)
+                    end
+                end)
             end
             local ok = pcall(renderTagESP, tag, cam, vp)
             if not ok then
@@ -12749,7 +12940,7 @@ RunService:BindToRenderStep("DeltaSuiteESP", Enum.RenderPriority.Last.Value, fun
         end
     end
     for _, tInst in ipairs(staleTags) do
-        unregisterWorldTag(tInst)
+        pcall(unregisterWorldTag, tInst)
     end
 
     if World.RenderRadar then
